@@ -27,6 +27,7 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+#include <CSV/csv.hpp>
 #include <DataFrame/DataFrame.h>
 #include <DataFrame/Utils/FixedSizeString.h>
 
@@ -738,6 +739,46 @@ read_async(const char *file_name, io_format iof) {
                        this,
                        file_name,
                        iof));
+}
+
+template <int IndexColNum, typename... ColTypes, typename... Strs>
+auto read_csv(std::string csv_file_path, Strs... data_col_names)
+{
+    constexpr bool kUseDefaultIndex = (IndexColNum == -1);
+    using DefaultIndexType          = uint64_t;
+    using IndicatedIndexType =
+        typename std::tuple_element<std::max(IndexColNum, 0), std::tuple<ColTypes...>>::type;
+    using IndexType =
+        typename std::conditional<kUseDefaultIndex, DefaultIndexType, IndicatedIndexType>::type;
+    StdDataFrame<IndexType> df;
+    auto vecs = io::parse_csv_to_vectors<ColTypes...>(csv_file_path, data_col_names...);
+    auto seq  = std::index_sequence_for<ColTypes...>{};
+    if constexpr (kUseDefaultIndex) {
+        IndexType num_rows;
+        std::vector<IndexType> index_vec;
+        [&]<typename T, T... ints>(std::integer_sequence<T, ints...> int_seq)
+        {
+            num_rows = std::max({std::get<ints>(vecs).size()...});
+        }
+        (seq);
+        for (IndexType i = 0; i < num_rows; i++) {
+            index_vec.push_back(i);
+        }
+        df.load_index(std::move(index_vec));
+    } else {
+        df.load_index(std::move(std::get<IndexColNum>(vecs)));
+    }
+    [&]<typename T, T... ints>(std::integer_sequence<T, ints...> int_seq,
+							   auto &vecs, auto strs)
+    {
+        (((IndexColNum != ints)
+              ? df.load_column(std::get<ints>(strs), std::move(std::get<ints>(vecs)),
+                               nan_policy::dont_pad_with_nans)
+              : 0),
+         ...);
+    }
+    (seq, vecs, std::make_tuple(data_col_names...));
+    return df;
 }
 
 } // namespace hmdf

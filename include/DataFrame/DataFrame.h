@@ -2454,6 +2454,10 @@ public:  // Utilities and miscellaneous
     bool
     write(S &o, io_format iof = io_format::csv) const;
 
+    template<typename S, typename ...Ts>
+    bool
+    write_with_values_only (S &o, bool values_only, io_format iof) const;
+
     // Same as write() above, but executed asynchronously
     //
     template<typename S, typename ... Ts>

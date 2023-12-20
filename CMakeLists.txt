@@ -2,7 +2,7 @@ cmake_minimum_required (VERSION 3.5)
 project (DataFrame VERSION 1.0.0)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON) # Produce cmpile_commands.json
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
@@ -197,6 +197,13 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.pc"
 #
 # Note that if your library depends from other libraries, you are probably
 # required to used the install_basic_package_files() DEPENDENCIES option.
+
+# Build the app binary
+add_executable(main  app/main.cc)
+
+# Link the DataFrame library to the app binary
+find_package(Threads REQUIRED)
+target_link_libraries(main DataFrame Threads::Threads)
 include(InstallBasicPackageFiles)
 if (UNIX)
   install_basic_package_files(${PROJECT_NAME}
