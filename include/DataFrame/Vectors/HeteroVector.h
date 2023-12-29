@@ -34,6 +34,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <unordered_map>
 
+#include "data_structure/far_vector.hpp"
 // ----------------------------------------------------------------------------
 
 namespace hmdf
@@ -46,7 +47,8 @@ namespace hmdf
 struct  HeteroVector  {
 
 public:
-
+    template <typename T>
+    using WrappedVector = FarLib::FarVector<T>;
     using size_type = size_t;
 
     HeteroVector();
@@ -59,9 +61,9 @@ public:
     HeteroVector &operator= (HeteroVector &&rhs);
 
     template<typename T>
-    std::vector<T> &get_vector();
+    WrappedVector<T> &get_vector();
     template<typename T>
-    const std::vector<T> &get_vector() const;
+    const WrappedVector<T> &get_vector() const;
 
     // It returns a view of the underlying vector.
     // NOTE: One can modify the vector through the view. But the vector
@@ -121,14 +123,14 @@ public:
     const T &front() const;
 
     template<typename T>
-    using iterator = typename std::vector<T>::iterator;
+    using iterator = typename WrappedVector<T>::iterator;
     template<typename T>
-    using const_iterator = typename std::vector<T>::const_iterator;
+    using const_iterator = typename WrappedVector<T>::const_iterator;
     template<typename T>
-    using reverse_iterator = typename std::vector<T>::reverse_iterator;
+    using reverse_iterator = typename WrappedVector<T>::reverse_iterator;
     template<typename T>
     using const_reverse_iterator =
-        typename std::vector<T>::const_reverse_iterator;
+        typename WrappedVector<T>::const_reverse_iterator;
 
     template<typename T>
     inline iterator<T>
@@ -165,7 +167,7 @@ public:
 private:
 
     template<typename T>
-    inline static std::unordered_map<const HeteroVector *, std::vector<T>>
+    inline static std::unordered_map<const HeteroVector *, WrappedVector<T>>
         vectors_ {  };
 
     std::vector<std::function<void(HeteroVector &)>>    clear_functions_;

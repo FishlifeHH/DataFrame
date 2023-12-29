@@ -120,7 +120,7 @@ public:  // Load/append/remove interfaces
     //   Type of column being added
     //
     template<typename T>
-    std::vector<T> &
+    HeteroVector::WrappedVector<T> &
     create_column(const char *name);
 
     // It removes a column named name.
@@ -237,6 +237,11 @@ public:  // Load/append/remove interfaces
                 const std::vector<T> &data,
                 nan_policy padding = nan_policy::pad_with_nans);
 
+    template<typename T>
+    size_type
+    load_column(const char *name,
+                const typename H::WrappedVector<T> &data,
+                nan_policy padding = nan_policy::pad_with_nans);
     // This method creates a column similar to above, but assumes data is
     // bucket or bar values. That means the data vector contains statistical
     // figure(s) for time buckets and must be aligned with the index column
@@ -2387,7 +2392,7 @@ public:  // Utilities and miscellaneous
     // NOTE: It is the responsibility of the programmer to make sure
     //       IndexType type is big enough to contain the frequency.
     //
-    static std::vector<IndexType>
+    static HeteroVector::WrappedVector<IndexType>
     gen_datetime_index(const char *start_datetime,
                        const char *end_datetime,
                        time_frequency t_freq,
@@ -2408,7 +2413,7 @@ public:  // Utilities and miscellaneous
     // increment:
     //   Increment by value
     //
-    static std::vector<IndexType>
+    static HeteroVector::WrappedVector<IndexType>
     gen_sequence_index(const IndexType &start_value,
                        const IndexType &end_value,
                        long increment = 1);

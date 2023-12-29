@@ -73,7 +73,7 @@ int main(int argc, char *argv[]) {
     HeteroVector    hv2;
     HeteroVector    hv3;
 
-    const std::vector<int>  &int_vec = hv.get_vector<int>();
+    const auto &int_vec = hv.get_vector<int>();
 
     hv.push_back (3);
     hv.emplace_back<int> (4);
@@ -130,7 +130,7 @@ int main(int argc, char *argv[]) {
     hv2 = hv;
     hv3 = std::move(hv2);
 
-    const std::vector<double>  &dbl_vec = hv3.get_vector<double>();
+    const auto  &dbl_vec = hv3.get_vector<double>();
 
     for (const auto &iter : int_vec)
         std::cout << iter << std::endl;

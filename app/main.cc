@@ -10,6 +10,18 @@
 #include <memory>
 #include <string>
 
+#include "rdma/client.hpp"
+#include "utils/control.hpp"
+
+#define STANDALONE
+
+#ifdef STANDALONE
+#include "rdma/server.hpp"
+#endif
+
+using namespace FarLib;
+using namespace FarLib::rdma;
+using namespace std::chrono_literals;
 using namespace hmdf;
 
 // Download dataset at https://www1.nyc.gov/site/tlc/about/tlc-trip-record-data.page.
@@ -85,8 +97,8 @@ void calculate_trip_duration(StdDataFrame<uint64_t>& df)
 
     std::vector<uint64_t> duration_vec;
     for (uint64_t i = 0; i < pickup_time_vec.size(); i++) {
-        auto pickup_time_second  = pickup_time_vec[i].to_second();
-        auto dropoff_time_second = dropoff_time_vec[i].to_second();
+        auto pickup_time_second  = pickup_time_vec[i]->to_second();
+        auto dropoff_time_second = dropoff_time_vec[i]->to_second();
         duration_vec.push_back(dropoff_time_second - pickup_time_second);
     }
     df.load_column("duration", std::move(duration_vec), nan_policy::dont_pad_with_nans);
@@ -143,9 +155,9 @@ void calculate_haversine_distance_column(StdDataFrame<uint64_t>& df)
     assert(pickup_longitude_vec.size() == dropoff_latitude_vec.size());
     std::vector<double> haversine_distance_vec;
     for (uint64_t i = 0; i < pickup_longitude_vec.size(); i++) {
-        haversine_distance_vec.push_back(haversine(pickup_latitude_vec[i], pickup_longitude_vec[i],
-                                                   dropoff_latitude_vec[i],
-                                                   dropoff_longitude_vec[i]));
+        haversine_distance_vec.push_back(
+            haversine(*pickup_latitude_vec[i], *pickup_longitude_vec[i], *dropoff_latitude_vec[i],
+                      *dropoff_longitude_vec[i]));
     }
     df.load_column("haversine_distance", std::move(haversine_distance_vec),
                    nan_policy::dont_pad_with_nans);
@@ -201,7 +213,8 @@ void analyze_trip_timestamp(StdDataFrame<uint64_t>& df)
     std::cout << "Print top 10 rows." << std::endl;
     auto top_10_df = df.get_data_by_idx<int, SimpleTime, double, char>(
         Index2D<StdDataFrame<uint64_t>::IndexType>{0, 9});
-    top_10_df.write_with_values_only<std::ostream, int, SimpleTime, double, char>(std::cout, false, io_format::json);
+    top_10_df.write_with_values_only<std::ostream, int, SimpleTime, double, char>(std::cout, false,
+                                                                                  io_format::json);
     std::cout << std::endl;
 
     for (auto& [hour, cnt] : pickup_hour_map) {
@@ -237,16 +250,49 @@ void analyze_trip_durations_of_timestamps(StdDataFrame<uint64_t>& df, const char
     auto& key_vec      = groupby_key.get_column<T_Key>(key_col_name);
     auto& duration_vec = groupby_key.get_column<uint64_t>("duration");
     for (uint64_t i = 0; i < key_vec.size(); i++) {
-        std::cout << static_cast<int>(key_vec[i]) << " " << duration_vec[i] << std::endl;
+        std::cout << static_cast<int>(*key_vec[i]) << " " << *duration_vec[i] << std::endl;
     }
 
     std::cout << std::endl;
 }
 
-int main()
+int main(int argc, const char* argv[])
 {
+    /* config setting */
+    Configure config;
+#ifdef STANDALONE
+    config.server_addr        = "127.0.0.1";
+    config.server_port        = "1234";
+    config.server_buffer_size = 1024L * 1024 * 1024 * 64;
+    config.client_buffer_size = 1024L * 1024 * 1024 * 64;
+    config.evict_batch_size   = 64 * 1024;
+#else
+    if (argc != 2) {
+        std::cout << "usage: " << argv[0] << " <configure file> " << std::endl;
+        return -1;
+    }
+    config.from_file(argv[1]);
+#endif
+
+    /* client-server connection */
+#ifdef STANDALONE
+    Server server(config);
+    std::thread server_thread([&server] { server.start(); });
+    std::this_thread::sleep_for(1s);
+#endif
+    FarLib::runtime_init(config);
+
+    /* test */
     std::chrono::time_point<std::chrono::steady_clock> times[10];
     auto df  = load_data();
+    times[0] = std::chrono::steady_clock::now();
+    print_number_vendor_ids_and_unique(df);
+    times[1] = std::chrono::steady_clock::now();
+    print_passage_counts_by_vendor_id(df, 1);
+    times[2] = std::chrono::steady_clock::now();
+    print_passage_counts_by_vendor_id(df, 2);
+    times[3] = std::chrono::steady_clock::now();
+    calculate_trip_duration(df);
     times[0] = std::chrono::steady_clock::now();
     print_number_vendor_ids_and_unique(df);
     times[1] = std::chrono::steady_clock::now();
@@ -277,5 +323,10 @@ int main()
               << std::chrono::duration_cast<std::chrono::microseconds>(times[9] - times[0]).count()
               << " us" << std::endl;
 
+    /* destroy runtime */
+    FarLib::runtime_destroy();
+#ifdef STANDALONE
+    server_thread.join();
+#endif
     return 0;
 }

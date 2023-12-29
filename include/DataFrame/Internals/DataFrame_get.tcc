@@ -233,11 +233,11 @@ V &DataFrame<I, H>::visit (const char *name, V &visitor)  {
 
     visitor.pre();
     for (; i < min_s; ++i)
-        visitor (indices_[i], vec[i]);
+        visitor (*indices_[i], *vec[i]);
     for (; i < idx_s; ++i)  {
         T   nan_val = _get_nan<T>();
 
-        visitor (indices_[i], nan_val);
+        visitor (*indices_[i], nan_val);
     }
     visitor.post();
 
@@ -754,11 +754,10 @@ DataFrame<I, H>::get_data_by_idx (Index2D<IndexType> range) const  {
     if (lower != indices_.end())  {
         df.load_index(lower, upper);
 
-        const size_type b_dist = std::distance(indices_.begin(), lower);
-        const size_type e_dist = std::distance(indices_.begin(),
-                                               upper < indices_.end()
+        const size_type b_dist = lower - indices_.begin();
+        const size_type e_dist = (upper < indices_.end()
                                                    ? upper
-                                                   : indices_.end());
+                                                   : indices_.end()) - indices_.begin();
 
         for (auto &iter : column_tb_)  {
             load_functor_<DataFrame, Ts ...>    functor (iter.first.c_str(),
@@ -1081,7 +1080,7 @@ get_data_by_sel (const char *name, F &sel_functor) const  {
 
     col_indices.reserve(idx_s / 2);
     for (size_type i = 0; i < col_s; ++i)
-        if (sel_functor (indices_[i], vec[i]))
+        if (sel_functor (*indices_[i], *vec[i]))
             col_indices.push_back(i);
 
     DataFrame       df;
@@ -1089,7 +1088,7 @@ get_data_by_sel (const char *name, F &sel_functor) const  {
 
     new_index.reserve(col_indices.size());
     for (const auto citer: col_indices)
-        new_index.push_back(indices_[citer]);
+        new_index.push_back(*indices_[citer]);
     df.load_index(std::move(new_index));
 
     for (auto col_citer : column_tb_)  {

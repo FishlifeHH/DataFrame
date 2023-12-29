@@ -38,7 +38,7 @@ namespace hmdf
 
 template<typename I, typename  H>
 template<typename T>
-std::vector<T> &DataFrame<I, H>::create_column (const char *name)  {
+HeteroVector::WrappedVector<T> &DataFrame<I, H>::create_column (const char *name)  {
 
     static_assert(std::is_base_of<HeteroVector, DataVec>::value,
                   "Only a StdDataFrame can call create_column()");
@@ -174,9 +174,12 @@ DataFrame<I, H>::load_index(const ITR &begin, const ITR &end)  {
 
     static_assert(std::is_base_of<HeteroVector, DataVec>::value,
                   "Only a StdDataFrame can call load_index()");
-
+    IndexVecType new_indices_;
+    for (auto it = begin;it < end;it++) {
+        new_indices_.push_back(*it);
+    }
     indices_.clear();
-    indices_.insert (indices_.end(), begin, end);
+    std::swap(indices_, new_indices_);
     return (indices_.size());
 }
 
@@ -189,14 +192,14 @@ DataFrame<I, H>::load_index(IndexVecType &&idx)  {
     static_assert(std::is_base_of<HeteroVector, DataVec>::value,
                   "Only a StdDataFrame can call load_index()");
 
-    indices_ = idx;
+    indices_ = std::move(idx);
     return (indices_.size());
 }
 
 // ----------------------------------------------------------------------------
 
 template<typename I, typename  H>
-std::vector<I> DataFrame<I, H>::
+HeteroVector::WrappedVector<I> DataFrame<I, H>::
 gen_datetime_index(const char *start_datetime,
                    const char *end_datetime,
                    time_frequency t_freq,
@@ -207,7 +210,7 @@ gen_datetime_index(const char *start_datetime,
                                      DT_DATE_STYLE::AME_STYLE, tz);
     const DateTime          end_di(end_datetime, DT_DATE_STYLE::AME_STYLE, tz);
     const double            diff = end_di.diff_seconds(start_di);
-    std::vector<IndexType>  index_vec;
+    HeteroVector::WrappedVector<IndexType>  index_vec;
 
     switch(t_freq)  {
     case time_frequency::annual:
@@ -254,12 +257,12 @@ gen_datetime_index(const char *start_datetime,
 // ----------------------------------------------------------------------------
 
 template<typename I, typename  H>
-std::vector<I> DataFrame<I, H>::
+HeteroVector::WrappedVector<I> DataFrame<I, H>::
 gen_sequence_index (const IndexType &start_value,
                    const IndexType &end_value,
                    long increment)  {
 
-    std::vector<IndexType>  index_vec;
+    HeteroVector::WrappedVector<IndexType>  index_vec;
     IndexType               sv = start_value;
 
     while (sv < end_value)  {
@@ -407,7 +410,7 @@ load_column (const char *name, std::vector<T> &&data, nan_policy padding)  {
     }
 
     const auto      iter = column_tb_.find (name);
-    std::vector<T>  *vec_ptr = nullptr;
+    HeteroVector::WrappedVector<T>  *vec_ptr = nullptr;
 
     if (iter == column_tb_.end())
         vec_ptr = &(create_column<T>(name));
@@ -492,6 +495,17 @@ load_column (const char *name,
     return (load_column<T>(name, { data.begin(), data.end() }, padding));
 }
 
+template<typename I, typename  H>
+template<typename T>
+typename DataFrame<I, H>::size_type
+DataFrame<I, H>::
+load_column (const char *name,
+             const typename H::WrappedVector<T> &data,
+             nan_policy padding)  {
+
+    return (load_column<T>(name, { data.begin(), data.end() }, padding));
+}
+
 // ----------------------------------------------------------------------------
 
 template<typename I, typename  H>
@@ -555,7 +569,7 @@ typename DataFrame<I, H>::size_type
 DataFrame<I, H>::
 append_column (const char *name, const T &val, nan_policy padding)  {
 
-    std::vector<T>  &vec = get_column<T>(name);
+    auto  &vec = get_column<T>(name);
     size_type       s = 1;
     const size_type idx_s = indices_.size();
 

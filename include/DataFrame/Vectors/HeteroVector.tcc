@@ -37,7 +37,7 @@ namespace hmdf
 {
 
 template<typename T>
-std::vector<T> &HeteroVector::get_vector()  {
+HeteroVector::WrappedVector<T> &HeteroVector::get_vector()  {
 
     auto    iter = vectors_<T>.find (this);
 
@@ -58,7 +58,7 @@ std::vector<T> &HeteroVector::get_vector()  {
                 vectors_<T>[&to] = std::move(vectors_<T>[&from]);
             });
 
-        iter = vectors_<T>.emplace (this, std::vector<T>()).first;
+        iter = vectors_<T>.emplace (this, HeteroVector::WrappedVector<T>()).first;
     }
 
     return (iter->second);
@@ -90,7 +90,7 @@ HeteroPtrView HeteroVector::get_ptr_view(size_type begin, size_type end)  {
 // ----------------------------------------------------------------------------
 
 template<typename T>
-const std::vector<T> &HeteroVector::get_vector() const  {
+const HeteroVector::WrappedVector<T> &HeteroVector::get_vector() const  {
 
     return (const_cast<HeteroVector *>(this)->get_vector<T>());
 }

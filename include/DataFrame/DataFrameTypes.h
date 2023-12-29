@@ -353,7 +353,7 @@ template<typename T, typename U>
 struct type_declare;
 
 template<typename U>
-struct type_declare<HeteroVector, U>  { using type = std::vector<U>; };
+struct type_declare<HeteroVector, U>  { using type = HeteroVector::WrappedVector<U>; };
 
 template<typename U>
 struct type_declare<HeteroView, U>  { using type = VectorView<U>; };

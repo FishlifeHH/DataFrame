@@ -285,7 +285,7 @@ DataFrame<I, H>::print_csv_functor_<Ts ...>::operator() (const T &vec)  {
         os << "<N/A>:";
 
     for (std::size_t i = 0; i < vec.size(); ++i)
-        os << vec[i] << ',';
+        os << *vec[i] << ',';
     os << '\n';
 
     return;
@@ -339,10 +339,10 @@ DataFrame<I, H>::print_json_functor_<Ts ...>::operator() (const T &vec)  {
 
     os << "\"D\":[";
     if (! vec.empty())  {
-        _write_json_df_index_(os, vec[0]);
+        _write_json_df_index_(os, *vec[0]);
         for (std::size_t i = 1; i < vec.size(); ++i)  {
             os << ',';
-            _write_json_df_index_(os, vec[i]);
+            _write_json_df_index_(os, *vec[i]);
         }
     }
     os << "]}";
@@ -719,7 +719,7 @@ operator() (const T &vec)  {
             citer >= 0 ? citer : static_cast<IT>(indices_size) + citer;
 
         if (index < vec_size)
-            new_col.push_back(vec[index]);
+            new_col.push_back(*vec[index]);
         else
             break;
     }

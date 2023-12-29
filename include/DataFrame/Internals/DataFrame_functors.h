@@ -63,11 +63,11 @@ struct shrink_to_fit_functor_ : DataVec::template visitor_base<Ts ...>  {
 template<typename ... Ts>
 struct sort_functor_ : DataVec::template visitor_base<Ts ...>  {
 
-    inline sort_functor_ (const std::vector<size_t> &si, size_t is)
+    inline sort_functor_ (const typename DataVec::WrappedVector<size_t> &si, size_t is)
         : sorted_idxs(si), idx_s(is)  {   }
 
-    const std::vector<size_t>   &sorted_idxs;
-    std::vector<size_t>         sorted_idxs_copy;
+    const typename DataVec::WrappedVector<size_t>   &sorted_idxs;
+    typename DataVec::WrappedVector<size_t>         sorted_idxs_copy;
     const size_t                idx_s;
 
     template<typename T2>

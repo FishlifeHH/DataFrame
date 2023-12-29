@@ -99,10 +99,10 @@ write_with_values_only (S &o, bool values_only, io_format iof) const  {
         if (iof == io_format::json)  {
             o << "\"D\":[";
             if (! indices_.empty())  {
-                _write_json_df_index_(o, indices_[0]);
+                _write_json_df_index_(o, *indices_[0]);
                 for (size_type i = 1; i < indices_.size(); ++i)  {
                     o << ',';
-                    _write_json_df_index_(o, indices_[i]);
+                    _write_json_df_index_(o, *indices_[i]);
                 }
             }
             o << "]}";
@@ -110,7 +110,7 @@ write_with_values_only (S &o, bool values_only, io_format iof) const  {
         }
         else  {
             for (size_type i = 0; i < indices_.size(); ++i)
-                _write_csv_df_index_(o, indices_[i]) << ',';
+                _write_csv_df_index_(o, *indices_[i]) << ',';
             o << '\n';
         }
     }
@@ -169,10 +169,10 @@ bool DataFrame<I, H>::write (S &o, io_format iof) const  {
     if (iof == io_format::json)  {
         o << "\"D\":[";
         if (index_s != 0)  {
-            _write_json_df_index_(o, indices_[0]);
+            _write_json_df_index_(o, *indices_[0]);
             for (size_type i = 1; i < index_s; ++i)  {
                 o << ',';
-                _write_json_df_index_(o, indices_[i]);
+                _write_json_df_index_(o, *indices_[i]);
             }
         }
         o << "]}";
@@ -180,7 +180,7 @@ bool DataFrame<I, H>::write (S &o, io_format iof) const  {
     }
     else if (iof == io_format::csv)  {
         for (size_type i = 0; i < index_s; ++i)
-            _write_csv_df_index_(o, indices_[i]) << ',';
+            _write_csv_df_index_(o, *indices_[i]) << ',';
         o << '\n';
     }
     else if (iof == io_format::csv2)  {
