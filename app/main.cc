@@ -96,6 +96,7 @@ void calculate_trip_duration(StdDataFrame<uint64_t>& df)
     assert(pickup_time_vec.size() == dropoff_time_vec.size());
 
     std::vector<uint64_t> duration_vec;
+    // TODO opt by multithread / scope
     for (uint64_t i = 0; i < pickup_time_vec.size(); i++) {
         auto pickup_time_second  = pickup_time_vec[i]->to_second();
         auto dropoff_time_second = dropoff_time_vec[i]->to_second();
@@ -154,6 +155,7 @@ void calculate_haversine_distance_column(StdDataFrame<uint64_t>& df)
     assert(pickup_longitude_vec.size() == dropoff_longitude_vec.size());
     assert(pickup_longitude_vec.size() == dropoff_latitude_vec.size());
     std::vector<double> haversine_distance_vec;
+    // TODO opt by multithread / scope
     for (uint64_t i = 0; i < pickup_longitude_vec.size(); i++) {
         haversine_distance_vec.push_back(
             haversine(*pickup_latitude_vec[i], *pickup_longitude_vec[i], *dropoff_latitude_vec[i],
@@ -196,6 +198,7 @@ void analyze_trip_timestamp(StdDataFrame<uint64_t>& df)
     auto month_it = pickup_month_vec.begin();
     auto time_it  = pickup_time_vec.cbegin();
 
+    // TODO opt by multithread / scope
     for (uint64_t i = 0; i < pickup_time_vec.size();
          ++i, ++hour_it, ++day_it, ++month_it, ++time_it) {
         auto time = *time_it;

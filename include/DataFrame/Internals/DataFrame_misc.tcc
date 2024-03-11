@@ -39,44 +39,40 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 namespace hmdf
 {
 
-template<typename I, typename H>
-template<typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::consistent_functor_<Ts ...>::operator() (T &vec) const  {
-
-    using ValueType =
-        typename std::remove_reference<decltype(vec)>::type::value_type;
+template <typename I, typename H>
+template <typename... Ts>
+template <typename T>
+void DataFrame<I, H>::consistent_functor_<Ts...>::operator()(T& vec) const
+{
+    using ValueType = typename std::remove_reference<decltype(vec)>::type::value_type;
 
     vec.resize(size, ValueType());
 }
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::shrink_to_fit_functor_<Ts ...>::operator() (T &vec) const  {
-
+template <typename I, typename H>
+template <typename... Ts>
+template <typename T>
+void DataFrame<I, H>::shrink_to_fit_functor_<Ts...>::operator()(T& vec) const
+{
     using value_type = typename T::value_type;
 
     vec.shrink_to_fit();
 
     const size_type s = vec.capacity() * sizeof(value_type);
 
-    if (s && ! (s & (s - 1)))  // Avoid cache line aliasing misses
+    if (s && !(s & (s - 1)))          // Avoid cache line aliasing misses
         vec.reserve(vec.size() + 1);  // Knock it off the power of 2
 }
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts>
-template<typename T2>
-void
-DataFrame<I, H>::sort_functor_<Ts ...>::operator() (T2 &vec)  {
-
+template <typename I, typename H>
+template <typename... Ts>
+template <typename T2>
+void DataFrame<I, H>::sort_functor_<Ts...>::operator()(T2& vec)
+{
     sorted_idxs_copy = sorted_idxs;
     _sort_by_sorted_index_(vec, sorted_idxs_copy, idx_s);
     return;
@@ -84,80 +80,69 @@ DataFrame<I, H>::sort_functor_<Ts ...>::operator() (T2 &vec)  {
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename LHS, typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::load_functor_<LHS, Ts ...>::operator() (const T &vec)  {
-
-    using VecType = typename std::remove_reference<T>::type;
+template <typename I, typename H>
+template <typename LHS, typename... Ts>
+template <typename T>
+void DataFrame<I, H>::load_functor_<LHS, Ts...>::operator()(const T& vec)
+{
+    using VecType   = typename std::remove_reference<T>::type;
     using ValueType = typename VecType::value_type;
 
     const size_type col_s = vec.size() >= end ? end : vec.size();
 
-    df.template load_column<ValueType>(
-        name,
-        { vec.begin() + begin, vec.begin() + col_s },
-        nan_p);
+    df.template load_column<ValueType>(name, {vec.begin() + begin, vec.begin() + col_s}, nan_p);
 }
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::load_all_functor_<Ts ...>::operator() (const T &vec)  {
-
-    using VecType = typename std::remove_reference<T>::type;
+template <typename I, typename H>
+template <typename... Ts>
+template <typename T>
+void DataFrame<I, H>::load_all_functor_<Ts...>::operator()(const T& vec)
+{
+    using VecType   = typename std::remove_reference<T>::type;
     using ValueType = typename VecType::value_type;
 
-    df.load_column<ValueType>(name, { vec.begin(), vec.end() },
-                              nan_policy::pad_with_nans);
+    df.load_column<ValueType>(name, {vec.begin(), vec.end()}, nan_policy::pad_with_nans);
     return;
 }
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::remove_functor_<Ts ...>::operator() (T &vec)  {
-
+template <typename I, typename H>
+template <typename... Ts>
+template <typename T>
+void DataFrame<I, H>::remove_functor_<Ts...>::operator()(T& vec)
+{
     vec.erase(vec.begin() + begin, vec.begin() + end);
     return;
 }
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename LHS, typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::view_setup_functor_<LHS, Ts ...>::
-operator() (T &vec)  {
-
-    using VecType = typename std::remove_reference<T>::type;
+template <typename I, typename H>
+template <typename LHS, typename... Ts>
+template <typename T>
+void DataFrame<I, H>::view_setup_functor_<LHS, Ts...>::operator()(T& vec)
+{
+    using VecType   = typename std::remove_reference<T>::type;
     using ValueType = typename VecType::value_type;
 
     const size_type col_s = vec.size() >= end ? end : vec.size();
 
     dfv.template setup_view_column_<ValueType, typename VecType::iterator>(
-        name,
-        { vec.begin() + begin, vec.begin() + col_s });
+        name, {vec.begin() + begin, vec.begin() + col_s});
     return;
 }
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::add_col_functor_<Ts ...>::operator() (const T &vec)  {
-
-    using VecType = typename std::remove_reference<T>::type;
+template <typename I, typename H>
+template <typename... Ts>
+template <typename T>
+void DataFrame<I, H>::add_col_functor_<Ts...>::operator()(const T& vec)
+{
+    using VecType   = typename std::remove_reference<T>::type;
     using ValueType = typename VecType::value_type;
 
     df.create_column<ValueType>(name);
@@ -166,76 +151,68 @@ DataFrame<I, H>::add_col_functor_<Ts ...>::operator() (const T &vec)  {
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename F, typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::groupby_functor_<F, Ts ...>::operator() (const T &vec)  {
-
-    if (! ::strcmp(name, DF_INDEX_COL_NAME))  {
-        auto    visitor = functor.template get_aggregator<I, I>();
+template <typename I, typename H>
+template <typename F, typename... Ts>
+template <typename T>
+void DataFrame<I, H>::groupby_functor_<F, Ts...>::operator()(const T& vec)
+{
+    if (!::strcmp(name, DF_INDEX_COL_NAME)) {
+        auto visitor = functor.template get_aggregator<I, I>();
 
         visitor.pre();
-        visitor(index_vec.begin() + begin, index_vec.begin() + end,
-                index_vec.begin() + begin, index_vec.begin() + end);
+        visitor(index_vec.begin() + begin, index_vec.begin() + end, index_vec.begin() + begin,
+                index_vec.begin() + end);
         visitor.post();
 
         df.append_index(visitor.get_result());
-    }
-    else  {
-        using VecType = typename std::remove_reference<T>::type;
+    } else {
+        using VecType   = typename std::remove_reference<T>::type;
         using ValueType = typename VecType::value_type;
 
-        auto                visitor =
-            functor.template get_aggregator<ValueType, I>();
-        const std::size_t   vec_end = std::min(end, vec.size());
+        auto visitor              = functor.template get_aggregator<ValueType, I>();
+        const std::size_t vec_end = std::min(end, vec.size());
 
         visitor.pre();
-        visitor(index_vec.begin() + begin, index_vec.begin() + vec_end,
-                vec.begin() + begin, vec.begin() + vec_end);
+        visitor(index_vec.begin() + begin, index_vec.begin() + vec_end, vec.begin() + begin,
+                vec.begin() + vec_end);
         visitor.post();
 
-        df.append_column<ValueType>(name, visitor.get_result(),
-                                    nan_policy::dont_pad_with_nans);
+        df.append_column<ValueType>(name, visitor.get_result(), nan_policy::dont_pad_with_nans);
     }
     return;
 }
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename F, typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::bucket_functor_<F, Ts ...>::operator() (const T &vec)  {
-
-    using VecType = typename std::remove_reference<T>::type;
+template <typename I, typename H>
+template <typename F, typename... Ts>
+template <typename T>
+void DataFrame<I, H>::bucket_functor_<F, Ts...>::operator()(const T& vec)
+{
+    using VecType   = typename std::remove_reference<T>::type;
     using ValueType = typename VecType::value_type;
 
-    const std::size_t   ts_s = indices.size();
-    std::size_t         marker = 0;
+    const std::size_t ts_s = indices.size();
+    std::size_t marker     = 0;
 
     if (df.indices_.empty())
         for (std::size_t i = 0; i < ts_s; ++i)
-            if (indices[i] - indices[marker] >= interval)  {
+            if (indices[i] - indices[marker] >= interval) {
                 df.indices_.push_back(indices[i - 1]);
                 marker = i;
             }
 
-    auto    visitor = functor.template get_aggregator<ValueType, I>();
+    auto visitor = functor.template get_aggregator<ValueType, I>();
 
     visitor.pre();
-    for (std::size_t i = 0, marker = 0; i < ts_s; ++i)  {
-        if (indices[i] - indices[marker] >= interval)  {
+    for (std::size_t i = 0, marker = 0; i < ts_s; ++i) {
+        if (indices[i] - indices[marker] >= interval) {
             visitor.post();
-            df.append_column<ValueType>(name,
-                                        visitor.get_result(),
-                                        nan_policy::dont_pad_with_nans);
+            df.append_column<ValueType>(name, visitor.get_result(), nan_policy::dont_pad_with_nans);
             visitor.pre();
             marker = i;
         }
-        visitor(indices.begin() + i, indices.begin() + i + 1,
-                vec.begin() + i, vec.begin() + i + 1);
+        visitor(indices.begin() + i, indices.begin() + i + 1, vec.begin() + i, vec.begin() + i + 1);
     }
 
     return;
@@ -243,15 +220,14 @@ DataFrame<I, H>::bucket_functor_<F, Ts ...>::operator() (const T &vec)  {
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::print_csv_functor_<Ts ...>::operator() (const T &vec)  {
+template <typename I, typename H>
+template <typename... Ts>
+template <typename T>
+void DataFrame<I, H>::print_csv_functor_<Ts...>::operator()(const T& vec)
+{
+    if (vec.empty()) return;
 
-    if (vec.empty())  return;
-
-    using VecType = typename std::remove_reference<T>::type;
+    using VecType   = typename std::remove_reference<T>::type;
     using ValueType = typename VecType::value_type;
 
     os << name << ':' << vec.size() << ':';
@@ -284,8 +260,7 @@ DataFrame<I, H>::print_csv_functor_<Ts ...>::operator() (const T &vec)  {
     else
         os << "<N/A>:";
 
-    for (std::size_t i = 0; i < vec.size(); ++i)
-        os << *vec[i] << ',';
+    for (std::size_t i = 0; i < vec.size(); ++i) os << *vec[i] << ',';
     os << '\n';
 
     return;
@@ -293,19 +268,17 @@ DataFrame<I, H>::print_csv_functor_<Ts ...>::operator() (const T &vec)  {
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::print_json_functor_<Ts ...>::operator() (const T &vec)  {
+template <typename I, typename H>
+template <typename... Ts>
+template <typename T>
+void DataFrame<I, H>::print_json_functor_<Ts...>::operator()(const T& vec)
+{
+    if (vec.empty()) return;
 
-    if (vec.empty())  return;
-
-    using VecType = typename std::remove_reference<T>::type;
+    using VecType   = typename std::remove_reference<T>::type;
     using ValueType = typename VecType::value_type;
 
-    if (need_pre_comma)
-        os << ",\n";
+    if (need_pre_comma) os << ",\n";
 
     os << '"' << name << "\":{\"N\":" << vec.size() << ',';
     if (typeid(ValueType) == typeid(float))
@@ -338,9 +311,9 @@ DataFrame<I, H>::print_json_functor_<Ts ...>::operator() (const T &vec)  {
         os << "\"T\":\"N/A\",";
 
     os << "\"D\":[";
-    if (! vec.empty())  {
+    if (!vec.empty()) {
         _write_json_df_index_(os, *vec[0]);
-        for (std::size_t i = 1; i < vec.size(); ++i)  {
+        for (std::size_t i = 1; i < vec.size(); ++i) {
             os << ',';
             _write_json_df_index_(os, *vec[i]);
         }
@@ -352,13 +325,12 @@ DataFrame<I, H>::print_json_functor_<Ts ...>::operator() (const T &vec)  {
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename S, typename ... Ts>
-template<typename T>
-void DataFrame<I, H>::
-print_csv2_header_functor_<S, Ts ...>::operator() (const T &vec)  {
-
-    using VecType = typename std::remove_reference<T>::type;
+template <typename I, typename H>
+template <typename S, typename... Ts>
+template <typename T>
+void DataFrame<I, H>::print_csv2_header_functor_<S, Ts...>::operator()(const T& vec)
+{
+    using VecType   = typename std::remove_reference<T>::type;
     using ValueType = typename VecType::value_type;
 
     _write_csv2_df_header_<S, ValueType>(os, name, vec.size(), '\0');
@@ -367,61 +339,54 @@ print_csv2_header_functor_<S, Ts ...>::operator() (const T &vec)  {
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename S, typename ... Ts>
-template<typename T>
-void DataFrame<I, H>::
-print_csv2_data_functor_<S, Ts ...>::operator() (const T &vec)  {
-
-    if (vec.size() > index)  os << vec[index];
+template <typename I, typename H>
+template <typename S, typename... Ts>
+template <typename T>
+void DataFrame<I, H>::print_csv2_data_functor_<S, Ts...>::operator()(const T& vec)
+{
+    if (vec.size() > index) os << vec[index];
     return;
 }
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::
-equal_functor_<Ts ...>::operator() (const T &lhs_vec)  {
-
-    using VecType = typename std::remove_reference<T>::type;
+template <typename I, typename H>
+template <typename... Ts>
+template <typename T>
+void DataFrame<I, H>::equal_functor_<Ts...>::operator()(const T& lhs_vec)
+{
+    using VecType   = typename std::remove_reference<T>::type;
     using ValueType = typename VecType::value_type;
 
-    const auto  &iter = df.column_tb_.find(name);
+    const auto& iter = df.column_tb_.find(name);
 
-    if (iter == df.column_tb_.end())  {
+    if (iter == df.column_tb_.end()) {
         result = false;
         return;
     }
 
-    const DataVec   &hv = df.data_[iter->second];
-    SpinGuard       guard(lock_);
-    const T         &rhs_vec = hv.template get_vector<ValueType>();
+    const DataVec& hv = df.data_[iter->second];
+    SpinGuard guard(lock_);
+    const T& rhs_vec = hv.template get_vector<ValueType>();
 
     guard.release();
-    if (lhs_vec != rhs_vec)
-        result = false;
+    if (lhs_vec != rhs_vec) result = false;
 }
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::
-mod_by_idx_functor_<Ts ...>::operator() (T &lhs_vec) const  {
-
-    using VecType = typename std::remove_reference<T>::type;
+template <typename I, typename H>
+template <typename... Ts>
+template <typename T>
+void DataFrame<I, H>::mod_by_idx_functor_<Ts...>::operator()(T& lhs_vec) const
+{
+    using VecType   = typename std::remove_reference<T>::type;
     using ValueType = typename VecType::value_type;
 
-    const auto  &iter = rhs_df.column_tb_.find(name);
+    const auto& iter = rhs_df.column_tb_.find(name);
 
-    if (iter != rhs_df.column_tb_.end())  {
-        const ColumnVecType<ValueType>  &rhs_vec =
-            rhs_df.get_column<ValueType>(name);
+    if (iter != rhs_df.column_tb_.end()) {
+        const ColumnVecType<ValueType>& rhs_vec = rhs_df.get_column<ValueType>(name);
 
         lhs_vec[lhs_idx] = rhs_vec[rhs_idx];
     }
@@ -429,81 +394,73 @@ mod_by_idx_functor_<Ts ...>::operator() (T &lhs_vec) const  {
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts, typename F, std::size_t ... Is>
-void DataFrame<I, H>::
-for_each_in_tuple_ (const std::tuple<Ts ...> &tu,
-                    F func,
-                    std::index_sequence<Is ...>)  {
-
+template <typename I, typename H>
+template <typename... Ts, typename F, std::size_t... Is>
+void DataFrame<I, H>::for_each_in_tuple_(const std::tuple<Ts...>& tu, F func,
+                                         std::index_sequence<Is...>)
+{
     using expander = int[];
-    (void) expander { 0, (func(std::get<Is>(tu)), 0) ... };
+    (void)expander{0, (func(std::get<Is>(tu)), 0)...};
 }
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts, typename F, std::size_t ... Is>
-void DataFrame<I, H>::
-for_each_in_tuple_ (std::tuple<Ts ...> &tu,
-                    F func,
-                    std::index_sequence<Is ...>)  {
-
+template <typename I, typename H>
+template <typename... Ts, typename F, std::size_t... Is>
+void DataFrame<I, H>::for_each_in_tuple_(std::tuple<Ts...>& tu, F func, std::index_sequence<Is...>)
+{
     using expander = int[];
-    (void) expander { 0, (func(std::get<Is>(tu)), 0) ... };
+    (void)expander{0, (func(std::get<Is>(tu)), 0)...};
 }
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts, typename F>
-void DataFrame<I, H>::
-for_each_in_tuple_ (const std::tuple<Ts...> &tu, F func)  {
-
+template <typename I, typename H>
+template <typename... Ts, typename F>
+void DataFrame<I, H>::for_each_in_tuple_(const std::tuple<Ts...>& tu, F func)
+{
     for_each_in_tuple_(tu, func, std::make_index_sequence<sizeof...(Ts)>());
 }
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts, typename F>
-void DataFrame<I, H>::for_each_in_tuple_ (std::tuple<Ts...> &tu, F func) {
-
+template <typename I, typename H>
+template <typename... Ts, typename F>
+void DataFrame<I, H>::for_each_in_tuple_(std::tuple<Ts...>& tu, F func)
+{
     for_each_in_tuple_(tu, func, std::make_index_sequence<sizeof...(Ts)>());
 }
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename RES_T, typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::
-index_join_functor_common_<RES_T, Ts ...>::operator()(const T &lhs_vec)  {
-
-    using VecType = typename std::remove_reference<T>::type;
+template <typename I, typename H>
+template <typename RES_T, typename... Ts>
+template <typename T>
+void DataFrame<I, H>::index_join_functor_common_<RES_T, Ts...>::operator()(const T& lhs_vec)
+{
+    using VecType   = typename std::remove_reference<T>::type;
     using ValueType = typename VecType::value_type;
 
-    const ColumnVecType<ValueType>  &rhs_vec = rhs.get_column<ValueType>(name);
-    std::vector<ValueType>          lhs_result_col;
-    std::vector<ValueType>          rhs_result_col;
+    const ColumnVecType<ValueType>& rhs_vec = rhs.get_column<ValueType>(name);
+    std::vector<ValueType> lhs_result_col;
+    std::vector<ValueType> rhs_result_col;
 
     lhs_result_col.reserve(joined_index_idx.size());
     rhs_result_col.reserve(joined_index_idx.size());
-    for (auto &citer : joined_index_idx)  {
-        const size_type left_i = std::get<0>(citer);
+    for (auto& citer : joined_index_idx) {
+        const size_type left_i  = std::get<0>(citer);
         const size_type right_i = std::get<1>(citer);
 
-        lhs_result_col.push_back(
-            left_i != std::numeric_limits<size_type>::max()
-                ? lhs_vec[left_i] : DataFrame::_get_nan<ValueType>());
-        rhs_result_col.push_back(
-            right_i != std::numeric_limits<size_type>::max()
-                ? rhs_vec[right_i] : DataFrame::_get_nan<ValueType>());
+        lhs_result_col.push_back(left_i != std::numeric_limits<size_type>::max()
+                                     ? lhs_vec[left_i]
+                                     : DataFrame::_get_nan<ValueType>());
+        rhs_result_col.push_back(right_i != std::numeric_limits<size_type>::max()
+                                     ? rhs_vec[right_i]
+                                     : DataFrame::_get_nan<ValueType>());
     }
 
-    char    lhs_str[256];
-    char    rhs_str[256];
+    char lhs_str[256];
+    char rhs_str[256];
 
     ::sprintf(lhs_str, "lhs.%s", name);
     ::sprintf(rhs_str, "rhs.%s", name);
@@ -513,24 +470,22 @@ index_join_functor_common_<RES_T, Ts ...>::operator()(const T &lhs_vec)  {
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<int SIDE, typename RES_T, typename ... Ts>
-template<typename T>
-void DataFrame<I, H>::index_join_functor_oneside_<SIDE, RES_T, Ts ...>::
-operator()(const T &vec)  {
-
-    using VecType = typename std::remove_reference<T>::type;
+template <typename I, typename H>
+template <int SIDE, typename RES_T, typename... Ts>
+template <typename T>
+void DataFrame<I, H>::index_join_functor_oneside_<SIDE, RES_T, Ts...>::operator()(const T& vec)
+{
+    using VecType   = typename std::remove_reference<T>::type;
     using ValueType = typename VecType::value_type;
 
-    std::vector<ValueType>  result_col;
+    std::vector<ValueType> result_col;
 
     result_col.reserve(joined_index_idx.size());
-    for (auto &citer : joined_index_idx)  {
+    for (auto& citer : joined_index_idx) {
         const size_type i = std::get<SIDE>(citer);
 
         result_col.push_back(
-            i != std::numeric_limits<size_type>::max()
-                ? vec[i] : DataFrame::_get_nan<ValueType>());
+            i != std::numeric_limits<size_type>::max() ? vec[i] : DataFrame::_get_nan<ValueType>());
     }
 
     result.load_column(name, std::move(result_col));
@@ -538,25 +493,22 @@ operator()(const T &vec)  {
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename RES_T, typename ... Ts>
-template<typename T>
-void DataFrame<I, H>::concat_functor_<RES_T, Ts ...>::
-operator()(const T &vec)  {
-
-    using VecType = typename std::remove_reference<T>::type;
+template <typename I, typename H>
+template <typename RES_T, typename... Ts>
+template <typename T>
+void DataFrame<I, H>::concat_functor_<RES_T, Ts...>::operator()(const T& vec)
+{
+    using VecType   = typename std::remove_reference<T>::type;
     using ValueType = typename VecType::value_type;
 
-    if (insert_col)  {
-        std::vector<ValueType>  res_vec(original_index_s + vec.size(),
-                                        DataFrame::_get_nan<ValueType>());
+    if (insert_col) {
+        std::vector<ValueType> res_vec(original_index_s + vec.size(),
+                                       DataFrame::_get_nan<ValueType>());
 
         std::copy(vec.begin(), vec.end(), res_vec.begin() + original_index_s);
         result.load_column(name, res_vec);
-    }
-    else  {
-        std::vector<ValueType>  &res_vec =
-            result.template get_column<ValueType>(name);
+    } else {
+        std::vector<ValueType>& res_vec = result.template get_column<ValueType>(name);
 
         res_vec.insert(res_vec.end(), vec.begin(), vec.end());
     }
@@ -564,12 +516,11 @@ operator()(const T &vec)  {
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts>
-template<typename T>
-void DataFrame<I, H>::vertical_shift_functor_<Ts ...>::
-operator() (T &vec) const  {
-
+template <typename I, typename H>
+template <typename... Ts>
+template <typename T>
+void DataFrame<I, H>::vertical_shift_functor_<Ts...>::operator()(T& vec) const
+{
     if (sp == shift_policy::up)
         DataFrame::shift_left_(vec, n);
     else
@@ -578,12 +529,11 @@ operator() (T &vec) const  {
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts>
-template<typename T>
-void DataFrame<I, H>::rotate_functor_<Ts ...>::
-operator() (T &vec) const  {
-
+template <typename I, typename H>
+template <typename... Ts>
+template <typename T>
+void DataFrame<I, H>::rotate_functor_<Ts...>::operator()(T& vec) const
+{
     if (sp == shift_policy::up)
         DataFrame::rotate_left_(vec, n);
     else
@@ -592,70 +542,60 @@ operator() (T &vec) const  {
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename TST, template<typename> class OPT, typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::
-operator_functor_<TST, OPT, Ts ...>::
-operator()(const T &lhs_vec)  {
-
-    using VecType = typename std::remove_reference<T>::type;
+template <typename I, typename H>
+template <typename TST, template <typename> class OPT, typename... Ts>
+template <typename T>
+void DataFrame<I, H>::operator_functor_<TST, OPT, Ts...>::operator()(const T& lhs_vec)
+{
+    using VecType   = typename std::remove_reference<T>::type;
     using ValueType = typename VecType::value_type;
 
-    const auto  rhs_citer = rhs_df.column_tb_.find(col_name);
+    const auto rhs_citer = rhs_df.column_tb_.find(col_name);
 
-    if (rhs_citer == rhs_df.column_tb_.end())  return;
+    if (rhs_citer == rhs_df.column_tb_.end()) return;
 
-    const DataVec   &rhs_hv = rhs_df.data_[rhs_citer->second];
-    SpinGuard       guard(lock_);
-    const auto      &rhs_vec = rhs_hv.template get_vector<ValueType>();
+    const DataVec& rhs_hv = rhs_df.data_[rhs_citer->second];
+    SpinGuard guard(lock_);
+    const auto& rhs_vec = rhs_hv.template get_vector<ValueType>();
 
     guard.release();
 
     const size_type new_col_size =
         std::min(std::min(lhs_vec.size(), rhs_vec.size()), new_idx.size());
-    std::vector<ValueType>  new_col;
-    auto                    Operator = OPT<ValueType>();
-    size_type               lcounter = 0;
-    size_type               rcounter = 0;
+    std::vector<ValueType> new_col;
+    auto Operator      = OPT<ValueType>();
+    size_type lcounter = 0;
+    size_type rcounter = 0;
 
     new_col.reserve(new_col_size);
-    for (size_type idx = 0; idx < new_col_size; )  {
-        if (lhs_idx[lcounter] == rhs_idx[rcounter])  {
+    for (size_type idx = 0; idx < new_col_size;) {
+        if (lhs_idx[lcounter] == rhs_idx[rcounter]) {
             new_col.push_back(Operator(lhs_vec[lcounter], rhs_vec[rcounter]));
             lcounter += 1;
             rcounter += 1;
             idx += 1;
-        }
-        else if (lhs_idx[lcounter] > rhs_idx[rcounter])  {
+        } else if (lhs_idx[lcounter] > rhs_idx[rcounter]) {
             rcounter += 1;
-        }
-        else  {
+        } else {
             lcounter += 1;
         }
-
     }
 
-    if (! new_col.empty())
-        result_df.load_column(col_name, std::move(new_col));
+    if (!new_col.empty()) result_df.load_column(col_name, std::move(new_col));
     return;
 }
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::
-map_missing_rows_functor_<Ts ...>::
-operator()(const T &vec)  {
-
+template <typename I, typename H>
+template <typename... Ts>
+template <typename T>
+void DataFrame<I, H>::map_missing_rows_functor_<Ts...>::operator()(const T& vec)
+{
     const size_type vec_size = vec.size();
 
-    for (size_type idx = 0; idx < index_rows; ++idx)  {
-        if (idx >= vec_size || DataFrame::_is_nan(vec[idx]))  {
+    for (size_type idx = 0; idx < index_rows; ++idx) {
+        if (idx >= vec_size || DataFrame::_is_nan(vec[idx])) {
             auto result = missing_row_map.emplace(idx, 0);
 
             result.first->second += 1;
@@ -667,28 +607,22 @@ operator()(const T &vec)  {
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::
-drop_missing_rows_functor_<Ts ...>::
-operator()(T &vec)  {
-
+template <typename I, typename H>
+template <typename... Ts>
+template <typename T>
+void DataFrame<I, H>::drop_missing_rows_functor_<Ts...>::operator()(T& vec)
+{
     drop_missing_rows_(vec, missing_row_map, policy, threshold, col_num);
     return;
 }
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::
-get_row_functor_<Ts ...>::
-operator()(const T &vec)  {
-
+template <typename I, typename H>
+template <typename... Ts>
+template <typename T>
+void DataFrame<I, H>::get_row_functor_<Ts...>::operator()(const T& vec)
+{
     result.reserve<typename T::value_type>(1);
     if (row_num < vec.size())
         result.push_back(vec[row_num]);
@@ -699,24 +633,20 @@ operator()(const T &vec)  {
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename IT, typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::
-sel_load_functor_<IT, Ts ...>::
-operator() (const T &vec)  {
-
-    using VecType = typename std::remove_reference<T>::type;
+template <typename I, typename H>
+template <typename IT, typename... Ts>
+template <typename T>
+void DataFrame<I, H>::sel_load_functor_<IT, Ts...>::operator()(const T& vec)
+{
+    using VecType   = typename std::remove_reference<T>::type;
     using ValueType = typename VecType::value_type;
 
-    std::vector<ValueType>  new_col;
-    const size_type         vec_size = vec.size();
+    std::vector<ValueType> new_col;
+    const size_type vec_size = vec.size();
 
     new_col.reserve(std::min(sel_indices.size(), vec_size));
-    for (const auto citer : sel_indices)  {
-        const size_type index =
-            citer >= 0 ? citer : static_cast<IT>(indices_size) + citer;
+    for (const auto citer : sel_indices) {
+        const size_type index = citer >= 0 ? citer : static_cast<IT>(indices_size) + citer;
 
         if (index < vec_size)
             new_col.push_back(*vec[index]);
@@ -729,24 +659,20 @@ operator() (const T &vec)  {
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename IT, typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::
-sel_load_view_functor_<IT, Ts ...>::
-operator() (T &vec)  {
-
-    using VecType = typename std::remove_reference<T>::type;
+template <typename I, typename H>
+template <typename IT, typename... Ts>
+template <typename T>
+void DataFrame<I, H>::sel_load_view_functor_<IT, Ts...>::operator()(T& vec)
+{
+    using VecType   = typename std::remove_reference<T>::type;
     using ValueType = typename VecType::value_type;
 
-    VectorPtrView<ValueType>    new_col;
-    const size_type             vec_size = vec.size();
+    VectorPtrView<ValueType> new_col;
+    const size_type vec_size = vec.size();
 
     new_col.reserve(std::min(sel_indices.size(), vec_size));
-    for (const auto citer : sel_indices)  {
-        const size_type index =
-            citer >= 0 ? citer : static_cast<IT>(indices_size) + citer;
+    for (const auto citer : sel_indices) {
+        const size_type index = citer >= 0 ? citer : static_cast<IT>(indices_size) + citer;
 
         if (index < vec_size)
             new_col.push_back(&(vec[index]));
@@ -756,27 +682,24 @@ operator() (T &vec)  {
 
     using data_vec_t = typename DataFramePtrView<I>::DataVec;
 
-    SpinGuard   guard(lock_);
+    SpinGuard guard(lock_);
 
     dfv.data_.emplace_back(data_vec_t(std::move(new_col)));
     guard.release();
-    dfv.column_tb_.emplace (name, dfv.data_.size() - 1);
+    dfv.column_tb_.emplace(name, dfv.data_.size() - 1);
     return;
 }
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::
-sel_remove_functor_<Ts ...>::
-operator() (T &vec) const  {
-
+template <typename I, typename H>
+template <typename... Ts>
+template <typename T>
+void DataFrame<I, H>::sel_remove_functor_<Ts...>::operator()(T& vec) const
+{
     const size_type sel_indices_s = sel_indices.size();
-    const size_type vec_s = vec.size();
-    size_type       del_count = 0;
+    const size_type vec_s         = vec.size();
+    size_type del_count           = 0;
 
     for (size_type i = 0; i < sel_indices_s; ++i)
         if (sel_indices[i] < vec_s)
@@ -788,16 +711,13 @@ operator() (T &vec) const  {
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::
-shuffle_functor_<Ts ...>::
-operator() (T &vec) const  {
-
-    std::random_device  rd;
-    std::mt19937        g(rd());
+template <typename I, typename H>
+template <typename... Ts>
+template <typename T>
+void DataFrame<I, H>::shuffle_functor_<Ts...>::operator()(T& vec) const
+{
+    std::random_device rd;
+    std::mt19937 g(rd());
 
     std::shuffle(vec.begin(), vec.end(), g);
     return;
@@ -805,87 +725,75 @@ operator() (T &vec) const  {
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::
-random_load_data_functor_<Ts ...>::operator() (const T &vec)  {
-
-    using VecType = typename std::remove_reference<T>::type;
+template <typename I, typename H>
+template <typename... Ts>
+template <typename T>
+void DataFrame<I, H>::random_load_data_functor_<Ts...>::operator()(const T& vec)
+{
+    using VecType   = typename std::remove_reference<T>::type;
     using ValueType = typename VecType::value_type;
 
-    const size_type vec_s = vec.size();
+    const size_type vec_s  = vec.size();
     const size_type n_rows = rand_indices.size();
-    VecType         new_vec;
-    size_type       prev_value;
+    VecType new_vec;
+    size_type prev_value;
 
     new_vec.reserve(n_rows);
-    for (size_type i = 0; i < n_rows; ++i)  {
-        if (rand_indices[i] < vec_s)  {
-            if (i == 0 || rand_indices[i] != prev_value)
-                new_vec.push_back(vec[rand_indices[i]]);
+    for (size_type i = 0; i < n_rows; ++i) {
+        if (rand_indices[i] < vec_s) {
+            if (i == 0 || rand_indices[i] != prev_value) new_vec.push_back(vec[rand_indices[i]]);
             prev_value = rand_indices[i];
-        }
-        else
+        } else
             break;
     }
 
-    df.load_column<ValueType>(name,
-                              std::move(new_vec),
-                              nan_policy::dont_pad_with_nans);
+    df.load_column<ValueType>(name, std::move(new_vec), nan_policy::dont_pad_with_nans);
     return;
 }
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::
-random_load_view_functor_<Ts ...>::operator() (const T &vec)  {
-
-    using VecType = typename std::remove_reference<T>::type;
+template <typename I, typename H>
+template <typename... Ts>
+template <typename T>
+void DataFrame<I, H>::random_load_view_functor_<Ts...>::operator()(const T& vec)
+{
+    using VecType   = typename std::remove_reference<T>::type;
     using ValueType = typename VecType::value_type;
 
-    const size_type             vec_s = vec.size();
-    const size_type             n_rows = rand_indices.size();
-    VectorPtrView<ValueType>    new_vec;
-    size_type                   prev_value;
+    const size_type vec_s  = vec.size();
+    const size_type n_rows = rand_indices.size();
+    VectorPtrView<ValueType> new_vec;
+    size_type prev_value;
 
     new_vec.reserve(n_rows);
-    for (size_type i = 0; i < n_rows; ++i)  {
-        if (rand_indices[i] < vec_s)  {
+    for (size_type i = 0; i < n_rows; ++i) {
+        if (rand_indices[i] < vec_s) {
             if (i == 0 || rand_indices[i] != prev_value)
-                new_vec.push_back(
-                    const_cast<ValueType *>(&(vec[rand_indices[i]])));
+                new_vec.push_back(const_cast<ValueType*>(&(vec[rand_indices[i]])));
             prev_value = rand_indices[i];
-        }
-        else
+        } else
             break;
     }
 
     using data_vec_t = typename DataFramePtrView<I>::DataVec;
 
-    SpinGuard   guard(lock_);
+    SpinGuard guard(lock_);
 
     dfv.data_.emplace_back(data_vec_t(std::move(new_vec)));
     guard.release();
-    dfv.column_tb_.emplace (name, dfv.data_.size() - 1);
+    dfv.column_tb_.emplace(name, dfv.data_.size() - 1);
     return;
 }
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::
-columns_info_functor_<Ts ...>::operator() (const T &vec)  {
-
-    using VecType = typename std::remove_reference<T>::type;
+template <typename I, typename H>
+template <typename... Ts>
+template <typename T>
+void DataFrame<I, H>::columns_info_functor_<Ts...>::operator()(const T& vec)
+{
+    using VecType   = typename std::remove_reference<T>::type;
     using ValueType = typename VecType::value_type;
 
     result.emplace_back(name, vec.size(), std::type_index(typeid(ValueType)));
@@ -893,30 +801,24 @@ columns_info_functor_<Ts ...>::operator() (const T &vec)  {
 
 // ----------------------------------------------------------------------------
 
-template<typename I, typename H>
-template<typename ... Ts>
-template<typename T>
-void
-DataFrame<I, H>::
-copy_remove_functor_<Ts ...>::operator() (const T &vec)  {
-
-    using VecType = typename std::remove_reference<T>::type;
+template <typename I, typename H>
+template <typename... Ts>
+template <typename T>
+void DataFrame<I, H>::copy_remove_functor_<Ts...>::operator()(const T& vec)
+{
+    using VecType   = typename std::remove_reference<T>::type;
     using ValueType = typename VecType::value_type;
 
-    VecType new_vec (vec.size() - to_delete.size());
+    VecType new_vec(vec.size() - to_delete.size());
 
-    _remove_copy_if_(vec.begin(), vec.end(), new_vec.begin(),
-                     [this] (std::size_t n) -> bool  {
-                         return (std::find(this->to_delete.begin(),
-                                           this->to_delete.end(),
-                                           n) != this->to_delete.end());
-                     });
-    df.load_column<ValueType>(name,
-                              std::move(new_vec),
-                              nan_policy::dont_pad_with_nans);
+    _remove_copy_if_(vec.begin(), vec.end(), new_vec.begin(), [this](std::size_t n) -> bool {
+        return (std::find(this->to_delete.begin(), this->to_delete.end(), n) !=
+                this->to_delete.end());
+    });
+    df.load_column<ValueType>(name, std::move(new_vec), nan_policy::dont_pad_with_nans);
 }
 
-} // namespace hmdf
+}  // namespace hmdf
 
 // ----------------------------------------------------------------------------
 
