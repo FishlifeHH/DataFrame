@@ -31,11 +31,14 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <cstring>
 
+#include "cache/accessor.hpp"
+#include "option.hpp"
+#include "utils/parallel.hpp"
 // ----------------------------------------------------------------------------
 
 namespace hmdf
 {
-
+using namespace FarLib::cache;
 template <typename I, typename H>
 template <typename T>
 HeteroVector::WrappedVector<T>& DataFrame<I, H>::create_column(const char* name)
@@ -162,13 +165,14 @@ typename DataFrame<I, H>::size_type DataFrame<I, H>::load_data(IndexVecType&& in
 
 template <typename I, typename H>
 template <typename ITR>
-typename DataFrame<I, H>::size_type DataFrame<I, H>::load_index(const ITR& begin, const ITR& end)
+typename DataFrame<I, H>::size_type DataFrame<I, H>::load_index(const ITR& begin, const ITR& end,
+                                                                DereferenceScope& scope)
 {
     static_assert(std::is_base_of<HeteroVector, DataVec>::value,
                   "Only a StdDataFrame can call load_index()");
     IndexVecType new_indices_;
     for (auto it = begin; it < end; it++) {
-        new_indices_.push_back(*it);
+        new_indices_.push_back(*it, scope);
     }
     indices_.clear();
     std::swap(indices_, new_indices_);
@@ -270,12 +274,13 @@ typename DataFrame<I, H>::size_type DataFrame<I, H>::append_index(Index2D<const 
 // ----------------------------------------------------------------------------
 
 template <typename I, typename H>
-typename DataFrame<I, H>::size_type DataFrame<I, H>::append_index(const IndexType& val)
+typename DataFrame<I, H>::size_type DataFrame<I, H>::append_index(const IndexType& val,
+                                                                  DereferenceScope& scope)
 {
     static_assert(std::is_base_of<HeteroVector, DataVec>::value,
                   "Only a StdDataFrame can call append_index()");
 
-    indices_.push_back(val);
+    indices_.push_back(val, scope);
     return (1);
 }
 
@@ -385,7 +390,6 @@ typename DataFrame<I, H>::size_type DataFrame<I, H>::load_column(const char* nam
             ret_cnt += 1;
         }
     }
-
     const auto iter                         = column_tb_.find(name);
     HeteroVector::WrappedVector<T>* vec_ptr = nullptr;
 
@@ -400,6 +404,78 @@ typename DataFrame<I, H>::size_type DataFrame<I, H>::load_column(const char* nam
 
     *vec_ptr = std::move(data);
     return (ret_cnt);
+}
+
+template <typename I, typename H>
+template <Algorithm alg, typename T>
+typename DataFrame<I, H>::size_type DataFrame<I, H>::load_column(
+    const char* name, typename H::WrappedVector<T>&& data, nan_policy padding)
+{
+    using namespace FarLib;
+    using namespace FarLib::cache;
+    const size_type idx_s  = indices_.size();
+    const size_type data_s = data.size();
+
+    if (data_s > idx_s) {
+        char buffer[512];
+
+        sprintf(buffer,
+                "DataFrame::load_column(): ERROR: "
+#ifdef _WIN32
+                "data size of %zu is larger than index size of %zu",
+#else
+                "data size of %lu is larger than index size of %lu",
+#endif  // _WIN32
+                data_s, idx_s);
+        throw InconsistentData(buffer);
+    }
+
+    size_type ret_cnt = data_s;
+
+    if (padding == nan_policy::pad_with_nans && data_s < idx_s) {
+        if constexpr (alg == DEFAULT) {
+            RootDereferenceScope scope;
+            for (size_type i = 0; i < idx_s - data_s; ++i) {
+                data.push_back(std::move(_get_nan<T>()), scope);
+                ret_cnt += 1;
+            }
+        } else if constexpr (alg == UTHREAD) {
+            data.resize(idx_s);
+            uthread::parallel_for_with_scope<1>(uthread::get_worker_count(), idx_s - data_s,
+                                                [&](size_t i, DereferenceScope& scope) {
+                                                    ON_MISS_BEGIN
+                                                    uthread::yield();
+                                                    ON_MISS_END
+                                                    *(data.at_mut(i + data_s, scope, __on_miss__)) =
+                                                        _get_nan<T>();
+                                                });
+        } else if constexpr (alg == PREFETCH) {
+            data.resize(idx_s);
+            RootDereferenceScope scope;
+            auto it = data.lbegin(scope).nextn(data_s, scope);
+            for (size_t i = 0; i < idx_s - data_s; i++, it.next(scope)) {
+                *it = _get_nan<T>();
+            }
+        } else if constexpr (alg == PARAROUTINE) {
+            TODO("not implemented");
+        } else {
+            ERROR("alg dont exist");
+        }
+    }
+    const auto iter                         = column_tb_.find(name);
+    HeteroVector::WrappedVector<T>* vec_ptr = nullptr;
+
+    if (iter == column_tb_.end())
+        vec_ptr = &(create_column<T>(name));
+    else {
+        DataVec& hv = data_[iter->second];
+        const SpinGuard guard(lock_);
+
+        vec_ptr = &(hv.template get_vector<T>());
+    }
+
+    *vec_ptr = data;
+    return (idx_s - data_s);
 }
 
 // ----------------------------------------------------------------------------
@@ -528,6 +604,7 @@ typename DataFrame<I, H>::size_type DataFrame<I, H>::append_column(const char* n
 template <typename I, typename H>
 template <typename T>
 typename DataFrame<I, H>::size_type DataFrame<I, H>::append_column(const char* name, const T& val,
+                                                                   DereferenceScope& scope,
                                                                    nan_policy padding)
 {
     auto& vec             = get_column<T>(name);
@@ -549,14 +626,14 @@ typename DataFrame<I, H>::size_type DataFrame<I, H>::append_column(const char* n
     }
 
     vec.reserve(idx_s);
-    vec.push_back(val);
+    vec.push_back(val, scope);
 
     size_type ret_cnt = s;
 
     s = vec.size();
     if (padding == nan_policy::pad_with_nans && s < idx_s) {
         for (size_type i = 0; i < idx_s - s; ++i) {
-            vec.push_back(std::move(_get_nan<T>()));
+            vec.push_back(std::move(_get_nan<T>()), scope);
             ret_cnt += 1;
         }
     }

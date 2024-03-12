@@ -35,6 +35,10 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <random>
 #include <unordered_set>
 
+#include "cache/accessor.hpp"
+#include "option.hpp"
+#include "utils/debug.hpp"
+#include "utils/parallel.hpp"
 // ----------------------------------------------------------------------------
 
 namespace hmdf
@@ -152,9 +156,10 @@ HeteroVector DataFrame<I, H>::get_row(size_type row_num,
 // ----------------------------------------------------------------------------
 
 template <typename I, typename H>
-template <typename T>
-std::vector<T> DataFrame<I, H>::get_col_unique_values(const char* name) const
+template <Algorithm alg, typename T>
+FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values(const char* name) const
 {
+    using namespace FarLib::cache;
     const ColumnVecType<T>& vec = get_column<T>(name);
     auto hash_func              = [](std::reference_wrapper<const T> v) -> std::size_t {
         return (std::hash<T>{}(v.get()));
@@ -168,29 +173,54 @@ std::vector<T> DataFrame<I, H>::get_col_unique_values(const char* name) const
                        decltype(equal_func)>
         table(vec.size(), hash_func, equal_func);
     bool counted_nan = false;
-    std::vector<T> result;
+    FarLib::FarVector<T> result;
 
     result.reserve(vec.size());
-    // TODO opt by multithread / scope
-    for (auto citer : vec) {
-        if (_is_nan<T>(citer) && !counted_nan) {
-            counted_nan = true;
-            result.push_back(_get_nan<T>());
-            continue;
+    // TODO cannot use multithread for std set
+    if constexpr (alg == DEFAULT || alg == UTHREAD) {
+        RootDereferenceScope scope;
+        ON_MISS_BEGIN
+        ON_MISS_END
+        for (size_t i = 0; i < vec.size(); i++) {
+            auto citer = *(vec.at(i, scope, __on_miss__));
+            if (_is_nan<T>(citer) && !counted_nan) {
+                counted_nan = true;
+                result.push_back(_get_nan<T>(), scope);
+                continue;
+            }
+
+            const auto insert_ret = table.emplace(std::ref(citer));
+
+            if (insert_ret.second) result.push_back(citer, scope);
         }
-
-        const auto insert_ret = table.emplace(std::ref(citer));
-
-        if (insert_ret.second) result.push_back(citer);
+    } else if constexpr (alg == PREFETCH) {
+        bool counted_nan = false;
+        RootDereferenceScope scope;
+        auto citer_it = vec.clbegin(scope);
+        for (size_t i = 0; i < vec.size(); i++, citer_it.next(scope)) {
+            auto& citer = *citer_it;
+            if (_is_nan<T>(citer) && !counted_nan) {
+                counted_nan = true;
+                result.push_back(_get_nan<T>(), scope);
+            }
+            const auto insert_ret = table.emplace(std::ref(citer));
+            if (insert_ret.second) {
+                result.push_back(citer, scope);
+            }
+        }
+    } else if constexpr (alg == PARAROUTINE) {
+        // TODO
+        ERROR("not implemented");
+    } else {
+        ERROR("algorithm dont exist");
     }
-
     return (result);
 }
 
 // ----------------------------------------------------------------------------
 
 template <typename I, typename H>
-template <typename... Ts>
+template <Algorithm alg, typename... Ts>
 void DataFrame<I, H>::multi_visit(Ts... args)
 {
     auto args_tuple = std::tuple<Ts...>(args...);
@@ -201,7 +231,7 @@ void DataFrame<I, H>::multi_visit(Ts... args)
         using V = typename std::remove_const<
                     typename std::remove_reference<decltype(functor)>::type>::type;
 
-        this->visit<T, V>(pa.first, functor);
+        this->visit<alg, T, V>(pa.first, functor);
     };
 
     for_each_in_tuple_(args_tuple, fc);
@@ -209,23 +239,81 @@ void DataFrame<I, H>::multi_visit(Ts... args)
 }
 
 // ----------------------------------------------------------------------------
-
 template <typename I, typename H>
-template <typename T, typename V>
+template <Algorithm alg, typename T, typename V>
 V& DataFrame<I, H>::visit(const char* name, V& visitor)
 {
+    using namespace FarLib;
+    using namespace FarLib::cache;
     auto& vec             = get_column<T>(name);
     const size_type idx_s = indices_.size();
     const size_type min_s = std::min<size_type>(vec.size(), idx_s);
     size_type i           = 0;
 
     visitor.pre();
-    // TODO opt by multithread / scope
-    for (; i < min_s; ++i) visitor(*indices_[i], *vec[i]);
-    for (; i < idx_s; ++i) {
-        T nan_val = _get_nan<T>();
+    if constexpr (alg == DEFAULT) {
+        for (; i < min_s; ++i) visitor(*indices_[i], *vec[i]);
+        for (; i < idx_s; ++i) {
+            T nan_val = _get_nan<T>();
 
-        visitor(*indices_[i], nan_val);
+            visitor(*indices_[i], nan_val);
+        }
+    } else if constexpr (alg == UTHREAD) {
+        uthread::parallel_for_with_scope<1>(uthread::get_worker_count() * UTH_FACTOR, min_s,
+                                            [&](size_t idx, DereferenceScope& scope) {
+                                                ON_MISS_BEGIN
+                                                uthread::yield();
+                                                ON_MISS_END
+                                                visitor(*(indices_.at(idx, scope, __on_miss__)),
+                                                        *(vec.at(idx, scope, __on_miss__)));
+                                            });
+        uthread::parallel_for_with_scope<1>(
+            uthread::get_worker_count() * UTH_FACTOR, idx_s - min_s,
+            [&](size_t idx, DereferenceScope& scope) {
+                ON_MISS_BEGIN
+                uthread::yield();
+                ON_MISS_END
+                T nan_val = _get_nan<T>();
+                visitor(*(indices_.at(idx + min_s, scope, __on_miss__)), nan_val);
+            });
+
+    } else if constexpr (alg == PREFETCH) {
+        struct Scope : public RootDereferenceScope {
+            decltype(indices_.clbegin()) indices_it;
+            decltype(vec.clbegin()) vec_it;
+
+            void pin() const override
+            {
+                indices_it.pin();
+                vec_it.pin();
+            }
+
+            void unpin() const override
+            {
+                indices_it.unpin();
+                vec_it.unpin();
+            }
+
+            void next()
+            {
+                indices_it.next(*this);
+                vec_it.next(*this);
+            }
+        } scope;
+        scope.indices_it = indices_.clbegin(scope);
+        scope.vec_it     = vec.clbegin(scope);
+        for (size_t i = 0; i < min_s; i++, scope.next()) {
+            visitor(*(scope.indices_it), *(scope.vec_it));
+        }
+        for (size_t i = min_s; i < idx_s; i++, scope.indices_it.next(scope)) {
+            T nan_val = _get_nan<T>();
+            visitor(*(scope.indices_it), nan_val);
+        }
+    } else if constexpr (alg == PARAROUTINE) {
+        // TODO
+        ERROR("not implemented");
+    } else {
+        ERROR("algorithm dont exist");
     }
     visitor.post();
 
@@ -589,7 +677,10 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_idx(Index2D<IndexType> range) const
     DataFrame df;
 
     if (lower != indices_.end()) {
-        df.load_index(lower, upper);
+        {
+            RootDereferenceScope scope;
+            df.load_index(lower, upper, scope);
+        }
 
         const size_type b_dist = lower - indices_.begin();
         const size_type e_dist =
@@ -852,34 +943,140 @@ DataFramePtrView<I> DataFrame<I, H>::get_view_by_loc(const std::vector<long>& lo
 }
 
 // ----------------------------------------------------------------------------
-
 template <typename I, typename H>
-template <typename T, typename F, typename... Ts>
+template <Algorithm alg, typename T, typename F, typename... Ts>
 DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functor) const
 {
+    using namespace FarLib;
+    using namespace FarLib::cache;
     const ColumnVecType<T>& vec = get_column<T>(name);
     const size_type idx_s       = indices_.size();
     const size_type col_s       = vec.size();
-    std::vector<size_type> col_indices;
-
+    FarLib::FarVector<size_type> col_indices;
     col_indices.reserve(idx_s / 2);
-    // TODO opt by multithread / scope
-    for (size_type i = 0; i < col_s; ++i)
-        if (sel_functor(*indices_[i], *vec[i])) col_indices.push_back(i);
+
+    if constexpr (alg == DEFAULT) {
+        for (size_type i = 0; i < col_s; ++i)
+            if (sel_functor(*indices_[i], *vec[i])) col_indices.push_back(i);
+    } else if constexpr (alg == UTHREAD) {
+        // only available if index = [0...idx_s - 1]
+        std::vector<std::vector<size_type>> uthread_col_indices(uthread::get_worker_count() *
+                                                                UTH_FACTOR);
+        for (auto& v : uthread_col_indices) {
+            v.reserve(idx_s / (uthread::get_worker_count() * UTH_FACTOR));
+        }
+        const size_t block =
+            (idx_s + uthread::get_worker_count() - 1) / uthread::get_worker_count();
+        uthread::parallel_for_with_scope<1>(
+            uthread::get_worker_count() * UTH_FACTOR, uthread::get_worker_count() * UTH_FACTOR,
+            [&](size_t i, DereferenceScope& scope) {
+                size_t lim = std::min((i + 1) * block, idx_s);
+                ON_MISS_BEGIN
+                uthread::yield();
+                ON_MISS_END
+                for (size_t index = i * block; index < lim; index++) {
+                    T elem = *(vec.at(index, scope, __on_miss__));
+                    if (sel_functor(index, elem)) {
+                        uthread_col_indices[i].push_back(index);
+                    }
+                }
+            });
+        {
+            RootDereferenceScope scope;
+            for (auto& v : uthread_col_indices) {
+                for (auto& idx : v) {
+                    col_indices.push_back(idx, scope);
+                }
+            }
+        }
+    } else if constexpr (alg == PREFETCH) {
+        // only available if index = [0...idx_s - 1]
+        auto start = get_cycles();
+        RootDereferenceScope scope;
+        auto vec_it = vec.clbegin(scope);
+        for (size_t i = 0; i < idx_s; i++, vec_it.next(scope)) {
+            if (sel_functor(i, *(vec_it))) {
+                col_indices.push_back(i, scope);
+            }
+        }
+        auto end = get_cycles();
+        std::cout << "col indices get: " << end - start << std::endl;
+    } else if constexpr (alg == PARAROUTINE) {
+        // TODO
+        TODO("not implemented");
+    } else {
+        ERROR("algorithm dont exist");
+    }
 
     DataFrame df;
     IndexVecType new_index;
 
-    new_index.reserve(col_indices.size());
-    // TODO opt by multithread / scope
-    for (const auto citer : col_indices) new_index.push_back(*indices_[citer]);
+    new_index.template resize<true>(col_indices.size());
+    if constexpr (alg == DEFAULT) {
+        for (size_t i = 0; i < col_indices.size(); i++) {
+            *(new_index[i]) = *indices_[col_indices[i]];
+        }
+    } else if constexpr (alg == UTHREAD) {
+        // only available if index = [0...idx_s - 1]
+        uthread::parallel_for_with_scope<1>(uthread::get_worker_count() * UTH_FACTOR,
+                                            col_indices.size(),
+                                            [&](size_t i, DereferenceScope& scope) {
+                                                ON_MISS_BEGIN
+                                                uthread::yield();
+                                                ON_MISS_END
+                                                *(new_index.at_mut(i, scope, __on_miss__)) =
+                                                    *(col_indices.at(i, scope, __on_miss__));
+                                                ;
+                                            });
+    } else if constexpr (alg == PREFETCH) {
+        auto start = get_cycles();
+        struct Scope : public RootDereferenceScope {
+            decltype(new_index.lbegin()) new_index_it;
+            decltype(col_indices.clbegin()) col_indices_it;
+            void pin() const override
+            {
+                col_indices_it.pin();
+                new_index_it.pin();
+            }
+
+            void unpin() const override
+            {
+                col_indices_it.unpin();
+                new_index_it.unpin();
+            }
+
+            void next()
+            {
+                new_index_it.next(*this);
+                col_indices_it.next(*this);
+            }
+        } scope;
+        scope.new_index_it   = new_index.lbegin(scope);
+        scope.col_indices_it = col_indices.clbegin(scope);
+        for (size_t i = 0; i < col_indices.size(); i++, scope.next()) {
+            ON_MISS_BEGIN
+            ON_MISS_END
+            *(scope.new_index_it) = *(scope.col_indices_it);
+        }
+        auto end = get_cycles();
+        std::cout << "new index fill: " << end - start << std::endl;
+    } else if constexpr (alg == PARAROUTINE) {
+        // TODO
+        ERROR("not implemented");
+    } else {
+        ERROR("algorithm dont exist");
+    }
+    auto start = get_cycles();
     df.load_index(std::move(new_index));
-
+    auto end = get_cycles();
+    std::cout << "load index: " << end - start << std::endl;
     for (auto col_citer : column_tb_) {
-        sel_load_functor_<size_type, Ts...> functor(col_citer.first.c_str(), col_indices, idx_s,
-                                                    df);
-
+        auto start = get_cycles();
+        alg_sel_load_functor_<alg, size_type, Ts...> functor(col_citer.first.c_str(), col_indices,
+                                                             idx_s, df);
         data_[col_citer.second].change(functor);
+        auto end = get_cycles();
+        std::cout << "change: " << end - start << std::endl;
     }
 
     return (df);

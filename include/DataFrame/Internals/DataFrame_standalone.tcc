@@ -29,25 +29,129 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // ----------------------------------------------------------------------------
 
+#include "cache/accessor.hpp"
+#include "option.hpp"
+#include "utils/parallel.hpp"
 namespace hmdf
 {
-
-template <typename T>
-static inline void _sort_by_sorted_index_(T& to_be_sorted, FarLib::FarVector<size_t>& sorting_idxs,
-                                          size_t idx_s)
+template <typename T, size_t GroupSize>
+static inline void _sort_by_sorted_index_(FarLib::FarVector<T, GroupSize>& to_be_sorted,
+                                          FarLib::FarVector<size_t>& sorting_idxs, size_t idx_s)
 {
+    using namespace FarLib;
+    using namespace FarLib::cache;
     if (idx_s > 0) {
         idx_s -= 1;
-        for (size_t i = 0; i < idx_s; ++i) {
-            // while the element i is not yet in place
-            while (*sorting_idxs[i] != *sorting_idxs[*sorting_idxs[i]]) {
-                // swap it with the element at its final place
-                const size_t j = *sorting_idxs[i];
+        struct Scope : public RootDereferenceScope {
+            decltype(sorting_idxs.lbegin()) sorting_idxs_i_it;
+            LiteAccessor<size_t, true> sorting_idxs_sorting_idxs_i_acc;
+            LiteAccessor<T, true> to_be_sorted_j_acc;
+            LiteAccessor<T, true> to_be_sorted_sorting_idxs_j_acc;
 
-                std::swap(*to_be_sorted[j], *to_be_sorted[*sorting_idxs[j]]);
-                std::swap(*sorting_idxs[i], *sorting_idxs[j]);
+            void pin() const override
+            {
+                sorting_idxs_i_it.pin();
+                sorting_idxs_sorting_idxs_i_acc.pin();
+                to_be_sorted_j_acc.pin();
+                to_be_sorted_sorting_idxs_j_acc.pin();
+            }
+
+            void unpin() const override
+            {
+                sorting_idxs_i_it.unpin();
+                sorting_idxs_sorting_idxs_i_acc.unpin();
+                to_be_sorted_j_acc.unpin();
+                to_be_sorted_sorting_idxs_j_acc.unpin();
+            }
+        } scope;
+        scope.sorting_idxs_i_it = sorting_idxs.lbegin(scope);
+        for (size_t i = 0; i < idx_s; ++i, scope.sorting_idxs_i_it.next(scope)) {
+            // while the element i is not yet in place
+            ON_MISS_BEGIN
+            ON_MISS_END
+            while (true) {
+                const size_t j                        = *(scope.sorting_idxs_i_it);
+                scope.sorting_idxs_sorting_idxs_i_acc = sorting_idxs.at_mut(j, scope, __on_miss__);
+                if (j == *(scope.sorting_idxs_sorting_idxs_i_acc)) {
+                    break;
+                }
+                scope.to_be_sorted_j_acc              = to_be_sorted.at_mut(j, scope, __on_miss__);
+                scope.to_be_sorted_sorting_idxs_j_acc = to_be_sorted.at_mut(
+                    *(scope.sorting_idxs_sorting_idxs_i_acc), scope, __on_miss__);
+                std::swap(*(scope.to_be_sorted_j_acc), *(scope.to_be_sorted_sorting_idxs_j_acc));
+                std::swap(*(scope.sorting_idxs_i_it), *(scope.sorting_idxs_sorting_idxs_i_acc));
+            }
+            /* the meaning of code above
+            while (*sorting_idxs[i] != *sorting_idxs[*sorting_idxs[i]]) {
+                 // swap it with the element at its final place
+                 const size_t j = *sorting_idxs[i];
+
+                 std::swap(*to_be_sorted[j], *to_be_sorted[*sorting_idxs[j]]);
+                 std::swap(*sorting_idxs[i], *sorting_idxs[j]);
+            } */
+        }
+    }
+}
+
+template <Algorithm alg, typename T>
+static inline void _sort_by_sorted_index_copy_(FarLib::FarVector<T>& to_be_sorted,
+                                               const FarLib::FarVector<size_t>& sorting_idxs,
+                                               size_t idx_s)
+{
+    using namespace FarLib;
+    using namespace FarLib::cache;
+    FarLib::FarVector<T> result;
+    if constexpr (alg == UTHREAD) {
+        result.template resize<true>(to_be_sorted.size());
+        uthread::parallel_for_with_scope<1>(
+            uthread::get_worker_count(), to_be_sorted.size(),
+            [&](size_t i, DereferenceScope& scope) {
+                ON_MISS_BEGIN
+                uthread::yield();
+                ON_MISS_END
+                size_t idx                  = *(sorting_idxs.at(i, scope, __on_miss__));
+                const T to_be_sorted_at_idx = *(to_be_sorted.at(i, scope, __on_miss__));
+                *(result.at_mut(idx, scope, __on_miss__)) = to_be_sorted_at_idx;
+            });
+        std::swap(result, to_be_sorted);
+    } else if constexpr (alg == PREFETCH) {
+        result.template resize<true>(to_be_sorted.size());
+        {
+            struct Scope : public RootDereferenceScope {
+                decltype(sorting_idxs.clbegin()) idx_it;
+                decltype(to_be_sorted.clbegin()) to_be_sorted_it;
+                LiteAccessor<T, true> result_acc;
+
+                void pin() const override
+                {
+                    idx_it.pin();
+                    to_be_sorted_it.pin();
+                    result_acc.pin();
+                }
+
+                void unpin() const override
+                {
+                    idx_it.unpin();
+                    to_be_sorted_it.unpin();
+                    result_acc.unpin();
+                }
+            } scope;
+            scope.idx_it          = sorting_idxs.clbegin(scope);
+            scope.to_be_sorted_it = to_be_sorted.clbegin(scope);
+            for (uint64_t i = 0; i < sorting_idxs.size();
+                 i++, scope.idx_it.next(scope), scope.to_be_sorted_it.next(scope)) {
+                ON_MISS_BEGIN
+                ON_MISS_END
+                scope.result_acc    = result.at_mut(*scope.idx_it, scope, __on_miss__);
+                *(scope.result_acc) = *(scope.to_be_sorted_it);
             }
         }
+        std::swap(result, to_be_sorted);
+    } else if constexpr (alg == PARAROUTINE) {
+        // TODO
+        ERROR("not implemented");
+    } else {
+        ERROR("algorithm dont exist");
     }
 }
 

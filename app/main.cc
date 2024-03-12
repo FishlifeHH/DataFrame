@@ -10,10 +10,15 @@
 #include <memory>
 #include <string>
 
+#include "cache/accessor.hpp"
+#include "option.hpp"
 #include "rdma/client.hpp"
 #include "utils/control.hpp"
-
-#define STANDALONE
+#include "utils/debug.hpp"
+#include "utils/parallel.hpp"
+// #define STANDALONE
+// simple: ~74M, full: ~16G
+// #define SIMPLE_BENCH
 
 #ifdef STANDALONE
 #include "rdma/server.hpp"
@@ -21,12 +26,12 @@
 
 using namespace FarLib;
 using namespace FarLib::rdma;
+using namespace FarLib::cache;
 using namespace std::chrono_literals;
 using namespace hmdf;
 
 // Download dataset at https://www1.nyc.gov/site/tlc/about/tlc-trip-record-data.page.
 // The following code is implemented based on the format of 2016 datasets.
-
 static double haversine(double lat1, double lon1, double lat2, double lon2)
 {
     // Distance between latitudes and longitudes
@@ -46,25 +51,34 @@ static double haversine(double lat1, double lon1, double lat2, double lon2)
 
 StdDataFrame<uint64_t> load_data()
 {
+#ifdef SIMPLE_BENCH
+    // const char* file_path =
+    // "/home/huanghong/mem_parallel/motivation/FarLib/build/very_simple.csv";
+    const char* file_path = "/mnt/simple.csv";
+
+#else
+    const char* file_path = "/mnt/all.csv";
+#endif
     return read_csv<-1, int, SimpleTime, SimpleTime, int, double, double, double, int, char, double,
                     double, int, double, double, double, double, double, double, double>(
-        "/mnt/all.csv", "VendorID", "tpep_pickup_datetime", "tpep_dropoff_datetime",
-        "passenger_count", "trip_distance", "pickup_longitude", "pickup_latitude", "RatecodeID",
-        "store_and_fwd_flag", "dropoff_longitude", "dropoff_latitude", "payment_type",
-        "fare_amount", "extra", "mta_tax", "tip_amount", "tolls_amount", "improvement_surcharge",
-        "total_amount");
+        file_path, "VendorID", "tpep_pickup_datetime", "tpep_dropoff_datetime", "passenger_count",
+        "trip_distance", "pickup_longitude", "pickup_latitude", "RatecodeID", "store_and_fwd_flag",
+        "dropoff_longitude", "dropoff_latitude", "payment_type", "fare_amount", "extra", "mta_tax",
+        "tip_amount", "tolls_amount", "improvement_surcharge", "total_amount");
 }
 
+template <Algorithm alg = DEFAULT_ALG>
 void print_number_vendor_ids_and_unique(StdDataFrame<uint64_t>& df)
 {
     std::cout << "print_number_vendor_ids_and_unique()" << std::endl;
     std::cout << "Number of vendor_ids in the train dataset: "
               << df.get_column<int>("VendorID").size() << std::endl;
     std::cout << "Number of unique vendor_ids in the train dataset:"
-              << df.get_col_unique_values<int>("VendorID").size() << std::endl;
+              << df.get_col_unique_values<alg, int>("VendorID").size() << std::endl;
     std::cout << std::endl;
 }
 
+template <Algorithm alg = DEFAULT_ALG>
 void print_passage_counts_by_vendor_id(StdDataFrame<uint64_t>& df, int vendor_id)
 {
     std::cout << "print_passage_counts_by_vendor_id(vendor_id), vendor_id = " << vendor_id
@@ -73,20 +87,50 @@ void print_passage_counts_by_vendor_id(StdDataFrame<uint64_t>& df, int vendor_id
     auto sel_vendor_functor = [&](const uint64_t&, const int& vid) -> bool {
         return vid == vendor_id;
     };
+    auto start = get_cycles();
     auto sel_df =
-        df.get_data_by_sel<int, decltype(sel_vendor_functor), int, SimpleTime, double, char>(
+        df.get_data_by_sel<alg, int, decltype(sel_vendor_functor), int, SimpleTime, double, char>(
             "VendorID", sel_vendor_functor);
-    auto& passage_count_vec = sel_df.get_column<int>("passenger_count");
+    auto end = get_cycles();
+    std::cout << "sel df get: " << end - start << std::endl;
+    auto& passage_count_vec = sel_df.template get_column<int>("passenger_count");
     std::map<int, int> passage_count_map;
-    for (auto passage_count : passage_count_vec) {
-        passage_count_map[passage_count]++;
+    start = get_cycles();
+    if constexpr (alg == DEFAULT) {
+        for (auto passage_count : passage_count_vec) {
+            passage_count_map[passage_count]++;
+        }
+    } else if constexpr (alg == UTHREAD) {
+        uthread::parallel_for_with_scope<1>(
+            uthread::get_worker_count() * UTH_FACTOR, passage_count_vec.size(),
+            [&](size_t i, DereferenceScope& scope) {
+                ON_MISS_BEGIN
+                uthread::yield();
+                ON_MISS_END
+                auto passage_count = *(passage_count_vec.at(i, scope, __on_miss__));
+                passage_count_map[passage_count]++;
+            });
+    } else if constexpr (alg == PREFETCH) {
+        RootDereferenceScope scope;
+        auto it         = passage_count_vec.clbegin(scope);
+        size_t vec_size = passage_count_vec.size();
+        for (size_t i = 0; i < vec_size; i++, it.next(scope)) {
+            passage_count_map[*it]++;
+        }
+    } else if constexpr (alg == PARAROUTINE) {
+        TODO("not implemented");
+    } else {
+        ERROR("alg dont exist");
     }
+    end = get_cycles();
+    std::cout << "map fill: " << end - start << std::endl;
     for (auto& [passage_count, cnt] : passage_count_map) {
         std::cout << "passage_count= " << passage_count << ", cnt = " << cnt << std::endl;
     }
     std::cout << std::endl;
 }
 
+template <Algorithm alg = DEFAULT_ALG>
 void calculate_trip_duration(StdDataFrame<uint64_t>& df)
 {
     std::cout << "calculate_trip_duration()" << std::endl;
@@ -95,54 +139,136 @@ void calculate_trip_duration(StdDataFrame<uint64_t>& df)
     auto& dropoff_time_vec = df.get_column<SimpleTime>("tpep_dropoff_datetime");
     assert(pickup_time_vec.size() == dropoff_time_vec.size());
 
-    std::vector<uint64_t> duration_vec;
-    // TODO opt by multithread / scope
-    for (uint64_t i = 0; i < pickup_time_vec.size(); i++) {
-        auto pickup_time_second  = pickup_time_vec[i]->to_second();
-        auto dropoff_time_second = dropoff_time_vec[i]->to_second();
-        duration_vec.push_back(dropoff_time_second - pickup_time_second);
+    FarLib::FarVector<uint64_t> duration_vec(pickup_time_vec.size());
+    if constexpr (alg == DEFAULT) {
+        for (uint64_t i = 0; i < pickup_time_vec.size(); i++) {
+            auto pickup_time_second  = pickup_time_vec[i]->to_second();
+            auto dropoff_time_second = dropoff_time_vec[i]->to_second();
+            *duration_vec[i]         = (dropoff_time_second - pickup_time_second);
+        }
+    } else if constexpr (alg == UTHREAD) {
+        uthread::parallel_for_with_scope<1>(
+            uthread::get_worker_count() * UTH_FACTOR, pickup_time_vec.size(),
+            [&](size_t i, DereferenceScope& scope) {
+                ON_MISS_BEGIN
+                uthread::yield();
+                ON_MISS_END
+                auto pickup_time_second = (pickup_time_vec.at(i, scope, __on_miss__))->to_second();
+                auto dropoff_time_second =
+                    (dropoff_time_vec.at(i, scope, __on_miss__))->to_second();
+                *(duration_vec.at_mut(i, scope, __on_miss__)) =
+                    dropoff_time_second - pickup_time_second;
+            });
+    } else if constexpr (alg == PREFETCH) {
+        struct Scope : public RootDereferenceScope {
+            decltype(pickup_time_vec.clbegin()) pickup_time_it;
+            decltype(dropoff_time_vec.clbegin()) dropoff_time_it;
+            decltype(duration_vec.lbegin()) duration_it;
+            void pin() const override
+            {
+                pickup_time_it.pin();
+                dropoff_time_it.pin();
+                duration_it.pin();
+            }
+            void unpin() const override
+            {
+                pickup_time_it.unpin();
+                dropoff_time_it.unpin();
+                duration_it.unpin();
+            }
+
+            void next()
+            {
+                pickup_time_it.next(*this);
+                dropoff_time_it.next(*this);
+                duration_it.next(*this);
+            }
+        } scope;
+        scope.pickup_time_it  = pickup_time_vec.clbegin(scope);
+        scope.dropoff_time_it = dropoff_time_vec.clbegin(scope);
+        scope.duration_it     = duration_vec.lbegin(scope);
+        for (size_t i = 0; i < pickup_time_vec.size(); i++, scope.next()) {
+            *(scope.duration_it) =
+                (scope.dropoff_time_it)->to_second() - (scope.pickup_time_it)->to_second();
+        }
+    } else if constexpr (alg == PARAROUTINE) {
+        TODO("not implemented");
+    } else {
+        ERROR("algorithm dont exist");
     }
-    df.load_column("duration", std::move(duration_vec), nan_policy::dont_pad_with_nans);
+    df.load_column<alg>("duration", std::move(duration_vec), nan_policy::dont_pad_with_nans);
     MaxVisitor<uint64_t> max_visitor;
     MinVisitor<uint64_t> min_visitor;
     MeanVisitor<uint64_t> mean_visitor;
-    df.multi_visit(std::make_pair("duration", &max_visitor),
-                   std::make_pair("duration", &min_visitor),
-                   std::make_pair("duration", &mean_visitor));
+    df.multi_visit<alg>(std::make_pair("duration", &max_visitor),
+                        std::make_pair("duration", &min_visitor),
+                        std::make_pair("duration", &mean_visitor));
     std::cout << "Mean duration = " << mean_visitor.get_result() << " seconds" << std::endl;
     std::cout << "Min duration = " << min_visitor.get_result() << " seconds" << std::endl;
     std::cout << "Max duration = " << max_visitor.get_result() << " seconds" << std::endl;
     std::cout << std::endl;
 }
 
+template <Algorithm alg = DEFAULT_ALG>
 void calculate_distribution_store_and_fwd_flag(StdDataFrame<uint64_t>& df)
 {
     std::cout << "calculate_distribution_store_and_fwd_flag()" << std::endl;
 
+    auto start              = get_cycles();
     auto sel_N_saff_functor = [&](const uint64_t&, const char& saff) -> bool {
         return saff == 'N';
     };
     auto N_df =
-        df.get_data_by_sel<char, decltype(sel_N_saff_functor), int, SimpleTime, double, char>(
+        df.get_data_by_sel<alg, char, decltype(sel_N_saff_functor), int, SimpleTime, double, char>(
             "store_and_fwd_flag", sel_N_saff_functor);
     std::cout << static_cast<double>(N_df.get_index().size()) / df.get_index().size() << std::endl;
-
+    auto end = get_cycles();
+    std::cout << "N-df get : " << end - start << std::endl;
+    start                   = get_cycles();
     auto sel_Y_saff_functor = [&](const uint64_t&, const char& saff) -> bool {
         return saff == 'Y';
     };
     auto Y_df =
-        df.get_data_by_sel<char, decltype(sel_Y_saff_functor), int, SimpleTime, double, char>(
+        df.get_data_by_sel<alg, char, decltype(sel_Y_saff_functor), int, SimpleTime, double, char>(
             "store_and_fwd_flag", sel_Y_saff_functor);
-    auto unique_vendor_id_vec = Y_df.get_col_unique_values<int>("VendorID");
+    end = get_cycles();
+    std::cout << "Y-df get: " << end - start << std::endl;
+    start                     = get_cycles();
+    auto unique_vendor_id_vec = Y_df.template get_col_unique_values<alg, int>("VendorID");
+    end                       = get_cycles();
+    std::cout << "unique get: " << end - start << std::endl;
     std::cout << '{';
-    for (auto& vector_id : unique_vendor_id_vec) {
-        std::cout << vector_id << ", ";
+    if constexpr (alg == DEFAULT) {
+        for (auto& vector_id : unique_vendor_id_vec) {
+            std::cout << vector_id << ", ";
+        }
+    } else if constexpr (alg == UTHREAD) {
+        uthread::parallel_for_with_scope<1>(
+            uthread::get_worker_count() * UTH_FACTOR, unique_vendor_id_vec.size(),
+            [&](size_t i, DereferenceScope& scope) {
+                ON_MISS_BEGIN
+                uthread::yield();
+                ON_MISS_END
+                std::cout << *(unique_vendor_id_vec.at(i, scope, __on_miss__)) << ", ";
+            });
+    } else if constexpr (alg == PREFETCH) {
+        RootDereferenceScope scope;
+        auto it         = unique_vendor_id_vec.clbegin(scope);
+        size_t vec_size = unique_vendor_id_vec.size();
+        for (size_t i = 0; i < vec_size; i++, it.next(scope)) {
+            std::cout << *it << ", ";
+        }
+    } else if constexpr (alg == PARAROUTINE) {
+        TODO("not implemented");
+    } else {
+        ERROR("alg dont exist");
     }
     std::cout << '}' << std::endl;
 
     std::cout << std::endl;
 }
 
+template <Algorithm alg = DEFAULT_ALG>
 void calculate_haversine_distance_column(StdDataFrame<uint64_t>& df)
 {
     std::cout << "calculate_haversine_distance_column()" << std::endl;
@@ -154,64 +280,195 @@ void calculate_haversine_distance_column(StdDataFrame<uint64_t>& df)
     assert(pickup_longitude_vec.size() == pickup_latitude_vec.size());
     assert(pickup_longitude_vec.size() == dropoff_longitude_vec.size());
     assert(pickup_longitude_vec.size() == dropoff_latitude_vec.size());
-    std::vector<double> haversine_distance_vec;
-    // TODO opt by multithread / scope
-    for (uint64_t i = 0; i < pickup_longitude_vec.size(); i++) {
-        haversine_distance_vec.push_back(
-            haversine(*pickup_latitude_vec[i], *pickup_longitude_vec[i], *dropoff_latitude_vec[i],
-                      *dropoff_longitude_vec[i]));
+    FarLib::FarVector<double> haversine_distance_vec(pickup_longitude_vec.size());
+    if constexpr (alg == DEFAULT) {
+        for (uint64_t i = 0; i < pickup_longitude_vec.size(); i++) {
+            *haversine_distance_vec[i] =
+                (haversine(*pickup_latitude_vec[i], *pickup_longitude_vec[i],
+                           *dropoff_latitude_vec[i], *dropoff_longitude_vec[i]));
+        }
+    } else if constexpr (alg == UTHREAD) {
+        uthread::parallel_for_with_scope<1>(
+            uthread::get_worker_count() * UTH_FACTOR, pickup_longitude_vec.size(),
+            [&](size_t i, DereferenceScope& scope) {
+                ON_MISS_BEGIN
+                uthread::yield();
+                ON_MISS_END
+                *(haversine_distance_vec.at_mut(i, scope, __on_miss__)) =
+                    haversine(*(pickup_latitude_vec.at(i, scope, __on_miss__)),
+                              *(pickup_longitude_vec.at(i, scope, __on_miss__)),
+                              *(dropoff_latitude_vec.at(i, scope, __on_miss__)),
+                              *(dropoff_longitude_vec.at(i, scope, __on_miss__)));
+            });
+    } else if constexpr (alg == PREFETCH) {
+        struct Scope : public RootDereferenceScope {
+            decltype(pickup_latitude_vec.clbegin()) pickup_latitude_it;
+            decltype(pickup_longitude_vec.clbegin()) pickup_longitude_it;
+            decltype(dropoff_latitude_vec.clbegin()) dropoff_latitude_it;
+            decltype(dropoff_longitude_vec.clbegin()) dropoff_longitude_it;
+            decltype(haversine_distance_vec.lbegin()) haversine_it;
+
+            void pin() const override
+            {
+                pickup_latitude_it.pin();
+                pickup_longitude_it.pin();
+                dropoff_latitude_it.pin();
+                dropoff_longitude_it.pin();
+                haversine_it.pin();
+            }
+
+            void unpin() const override
+            {
+                pickup_latitude_it.unpin();
+                pickup_longitude_it.unpin();
+                dropoff_latitude_it.unpin();
+                dropoff_longitude_it.unpin();
+                haversine_it.unpin();
+            }
+
+            void next()
+            {
+                pickup_latitude_it.next(*this);
+                pickup_longitude_it.next(*this);
+                dropoff_latitude_it.next(*this);
+                dropoff_longitude_it.next(*this);
+                haversine_it.next(*this);
+            }
+        } scope;
+        scope.pickup_latitude_it   = pickup_latitude_vec.clbegin(scope);
+        scope.pickup_longitude_it  = pickup_longitude_vec.clbegin(scope);
+        scope.dropoff_latitude_it  = dropoff_latitude_vec.clbegin(scope);
+        scope.dropoff_longitude_it = dropoff_longitude_vec.clbegin(scope);
+        scope.haversine_it         = haversine_distance_vec.lbegin(scope);
+        for (size_t i = 0; i < pickup_longitude_vec.size(); i++, scope.next()) {
+            *(scope.haversine_it) =
+                haversine(*(scope.pickup_latitude_it), *(scope.pickup_longitude_it),
+                          *(scope.dropoff_latitude_it), *(scope.dropoff_longitude_it));
+        }
+    } else if constexpr (alg == PARAROUTINE) {
+        // TODO
+        ERROR("not implemented");
+    } else {
+        ERROR("algorithm dont exist");
     }
-    df.load_column("haversine_distance", std::move(haversine_distance_vec),
-                   nan_policy::dont_pad_with_nans);
+    df.load_column<alg>("haversine_distance", std::move(haversine_distance_vec),
+                        nan_policy::dont_pad_with_nans);
     auto sel_functor = [&](const uint64_t&, const double& dist) -> bool { return dist > 100; };
-    auto sel_df = df.get_data_by_sel<double, decltype(sel_functor), int, SimpleTime, double, char>(
-        "haversine_distance", sel_functor);
+    auto sel_df =
+        df.get_data_by_sel<alg, double, decltype(sel_functor), int, SimpleTime, double, char>(
+            "haversine_distance", sel_functor);
     std::cout << "Number of rows that have haversine_distance > 100 KM = "
               << sel_df.get_index().size() << std::endl;
 
     std::cout << std::endl;
 }
 
+template <Algorithm alg = DEFAULT_ALG>
 void analyze_trip_timestamp(StdDataFrame<uint64_t>& df)
 {
     std::cout << "analyze_trip_timestamp()" << std::endl;
 
     MaxVisitor<SimpleTime> max_visitor;
     MinVisitor<SimpleTime> min_visitor;
-    df.multi_visit(std::make_pair("tpep_pickup_datetime", &max_visitor),
-                   std::make_pair("tpep_pickup_datetime", &min_visitor));
+    df.multi_visit<alg>(std::make_pair("tpep_pickup_datetime", &max_visitor),
+                        std::make_pair("tpep_pickup_datetime", &min_visitor));
     std::cout << max_visitor.get_result() << std::endl;
     std::cout << min_visitor.get_result() << std::endl;
 
     auto& pickup_time_vec = df.get_column<SimpleTime>("tpep_pickup_datetime");
-    std::vector<char> pickup_hour_vec;
-    std::vector<char> pickup_day_vec;
-    std::vector<char> pickup_month_vec;
+    FarLib::FarVector<char> pickup_hour_vec(pickup_time_vec.size());
+    FarLib::FarVector<char> pickup_day_vec(pickup_time_vec.size());
+    FarLib::FarVector<char> pickup_month_vec(pickup_time_vec.size());
     std::map<char, int> pickup_hour_map;
     std::map<char, int> pickup_day_map;
     std::map<char, int> pickup_month_map;
-    pickup_hour_vec.resize(pickup_time_vec.size());
-    pickup_day_vec.resize(pickup_time_vec.size());
-    pickup_month_vec.resize(pickup_time_vec.size());
-    auto hour_it  = pickup_hour_vec.begin();
-    auto day_it   = pickup_day_vec.begin();
-    auto month_it = pickup_month_vec.begin();
-    auto time_it  = pickup_time_vec.cbegin();
 
-    // TODO opt by multithread / scope
-    for (uint64_t i = 0; i < pickup_time_vec.size();
-         ++i, ++hour_it, ++day_it, ++month_it, ++time_it) {
-        auto time = *time_it;
-        pickup_hour_map[time.hour_]++;
-        *hour_it = time.hour_;
-        pickup_day_map[time.day_]++;
-        *day_it = time.day_;
-        pickup_month_map[time.month_]++;
-        *month_it = time.month_;
+    if constexpr (alg == DEFAULT) {
+        auto hour_it  = pickup_hour_vec.begin();
+        auto day_it   = pickup_day_vec.begin();
+        auto month_it = pickup_month_vec.begin();
+        auto time_it  = pickup_time_vec.cbegin();
+
+        for (uint64_t i = 0; i < pickup_time_vec.size();
+             ++i, ++hour_it, ++day_it, ++month_it, ++time_it) {
+            auto time = *time_it;
+            pickup_hour_map[time.hour_]++;
+            *hour_it = time.hour_;
+            pickup_day_map[time.day_]++;
+            *day_it = time.day_;
+            pickup_month_map[time.month_]++;
+            *month_it = time.month_;
+        }
+    } else {
+        if constexpr (alg == UTHREAD) {
+            uthread::parallel_for_with_scope<1>(
+                uthread::get_worker_count() * UTH_FACTOR, pickup_time_vec.size(),
+                [&](size_t i, DereferenceScope& scope) {
+                    ON_MISS_BEGIN
+                    uthread::yield();
+                    ON_MISS_END
+                    auto time = *(pickup_time_vec.at(i, scope, __on_miss__));
+                    pickup_hour_map[time.hour_]++;
+                    pickup_day_map[time.day_]++;
+                    pickup_month_map[time.month_]++;
+                    *(pickup_hour_vec.at_mut(i, scope, __on_miss__))  = time.hour_;
+                    *(pickup_day_vec.at_mut(i, scope, __on_miss__))   = time.day_;
+                    *(pickup_month_vec.at_mut(i, scope, __on_miss__)) = time.month_;
+                });
+        } else if constexpr (alg == PREFETCH) {
+            struct Scope : public RootDereferenceScope {
+                decltype(pickup_time_vec.clbegin()) pickup_time_it;
+                decltype(pickup_hour_vec.lbegin()) pickup_hour_it;
+                decltype(pickup_day_vec.lbegin()) pickup_day_it;
+                decltype(pickup_month_vec.lbegin()) pickup_month_it;
+
+                void pin() const override
+                {
+                    pickup_time_it.pin();
+                    pickup_hour_it.pin();
+                    pickup_day_it.pin();
+                    pickup_month_it.pin();
+                }
+
+                void unpin() const override
+                {
+                    pickup_time_it.unpin();
+                    pickup_hour_it.unpin();
+                    pickup_day_it.unpin();
+                    pickup_month_it.unpin();
+                }
+
+                void next()
+                {
+                    pickup_time_it.next(*this);
+                    pickup_hour_it.next(*this);
+                    pickup_day_it.next(*this);
+                    pickup_month_it.next(*this);
+                }
+            } scope;
+            scope.pickup_time_it  = pickup_time_vec.clbegin(scope);
+            scope.pickup_hour_it  = pickup_hour_vec.lbegin(scope);
+            scope.pickup_day_it   = pickup_day_vec.lbegin(scope);
+            scope.pickup_month_it = pickup_month_vec.lbegin(scope);
+
+            for (size_t i = 0; i < pickup_time_vec.size(); i++, scope.next()) {
+                pickup_hour_map[scope.pickup_time_it->hour_]++;
+                pickup_day_map[scope.pickup_time_it->day_]++;
+                pickup_month_map[scope.pickup_time_it->month_]++;
+                *(scope.pickup_hour_it)  = scope.pickup_time_it->hour_;
+                *(scope.pickup_day_it)   = scope.pickup_time_it->day_;
+                *(scope.pickup_month_it) = scope.pickup_time_it->month_;
+            }
+        } else if constexpr (alg == PARAROUTINE) {
+            TODO("not implemented");
+        } else {
+            ERROR("algorithm dont exist");
+        }
     }
-    df.load_column("pickup_hour", std::move(pickup_hour_vec), nan_policy::dont_pad_with_nans);
-    df.load_column("pickup_day", std::move(pickup_day_vec), nan_policy::dont_pad_with_nans);
-    df.load_column("pickup_month", std::move(pickup_month_vec), nan_policy::dont_pad_with_nans);
+    df.load_column<alg>("pickup_hour", std::move(pickup_hour_vec), nan_policy::dont_pad_with_nans);
+    df.load_column<alg>("pickup_day", std::move(pickup_day_vec), nan_policy::dont_pad_with_nans);
+    df.load_column<alg>("pickup_month", std::move(pickup_month_vec),
+                        nan_policy::dont_pad_with_nans);
 
     std::cout << "Print top 10 rows." << std::endl;
     auto top_10_df = df.get_data_by_idx<int, SimpleTime, double, char>(
@@ -234,7 +491,7 @@ void analyze_trip_timestamp(StdDataFrame<uint64_t>& df)
     std::cout << std::endl;
 }
 
-template <typename T_Key>
+template <typename T_Key, Algorithm alg = DEFAULT_ALG>
 void analyze_trip_durations_of_timestamps(StdDataFrame<uint64_t>& df, const char* key_col_name)
 {
     std::cout << "analyze_trip_durations_of_timestamps() on key = " << key_col_name << std::endl;
@@ -248,14 +505,57 @@ void analyze_trip_durations_of_timestamps(StdDataFrame<uint64_t>& df, const char
                               std::make_pair("duration", std::move(copy_key_duration)));
 
     StdDataFrame<uint64_t> groupby_key =
-        df_key_duration.groupby<GroupbyMedian, T_Key, T_Key, uint64_t>(GroupbyMedian(),
-                                                                       key_col_name);
+        df_key_duration.groupby<alg, GroupbyMedian, T_Key, T_Key, uint64_t>(GroupbyMedian(),
+                                                                            key_col_name);
     auto& key_vec      = groupby_key.get_column<T_Key>(key_col_name);
     auto& duration_vec = groupby_key.get_column<uint64_t>("duration");
-    for (uint64_t i = 0; i < key_vec.size(); i++) {
-        std::cout << static_cast<int>(*key_vec[i]) << " " << *duration_vec[i] << std::endl;
-    }
+    if constexpr (alg == DEFAULT) {
+        for (uint64_t i = 0; i < key_vec.size(); i++) {
+            std::cout << static_cast<int>(*key_vec[i]) << " " << *duration_vec[i] << std::endl;
+        }
+    } else if constexpr (alg == UTHREAD) {
+        uthread::parallel_for_with_scope<1>(
+            uthread::get_worker_count(), key_vec.size(), [&](size_t i, DereferenceScope& scope) {
+                ON_MISS_BEGIN
+                uthread::yield();
+                ON_MISS_END
+                auto key      = *(key_vec.at(i, scope, __on_miss__));
+                auto duration = *(duration_vec.at(i, scope, __on_miss__));
+                std::cout << static_cast<int>(key) << " " << duration << std::endl;
+            });
+    } else if constexpr (alg == PREFETCH) {
+        struct Scope : public RootDereferenceScope {
+            decltype(key_vec.lbegin()) key_it;
+            decltype(duration_vec.lbegin()) duration_it;
 
+            void pin() const override
+            {
+                key_it.pin();
+                duration_it.pin();
+            }
+
+            void unpin() const override
+            {
+                key_it.unpin();
+                duration_it.unpin();
+            }
+
+            void next()
+            {
+                key_it.next(*this);
+                duration_it.next(*this);
+            }
+        } scope;
+        scope.key_it      = key_vec.lbegin(scope);
+        scope.duration_it = duration_vec.lbegin(scope);
+        for (uint64_t i = 0; i < key_vec.size(); i++, scope.next()) {
+            std::cout << static_cast<int>(*scope.key_it) << " " << *scope.duration_it << std::endl;
+        }
+    } else if constexpr (alg == PARAROUTINE) {
+        TODO("not implemented");
+    } else {
+        ERROR("alg not exists");
+    }
     std::cout << std::endl;
 }
 
@@ -264,11 +564,18 @@ int main(int argc, const char* argv[])
     /* config setting */
     Configure config;
 #ifdef STANDALONE
-    config.server_addr        = "127.0.0.1";
-    config.server_port        = "1234";
+    config.server_addr = "127.0.0.1";
+    config.server_port = "1234";
+#ifdef SIMPLE_BENCH
+    // ~74M
+    config.server_buffer_size = 1024L * 1024 * 1024 * 2;
+    config.client_buffer_size = 1024L * 1024 * 16;
+#else
+    // ~16G
     config.server_buffer_size = 1024L * 1024 * 1024 * 64;
-    config.client_buffer_size = 1024L * 1024 * 1024 * 64;
-    config.evict_batch_size   = 64 * 1024;
+    config.client_buffer_size = 1024L * 1024 * 1024 * 4;
+#endif
+    config.evict_batch_size = 64 * 1024;
 #else
     if (argc != 2) {
         std::cout << "usage: " << argv[0] << " <configure file> " << std::endl;
@@ -284,48 +591,43 @@ int main(int argc, const char* argv[])
     std::this_thread::sleep_for(1s);
 #endif
     FarLib::runtime_init(config);
-
+    srand(time(NULL));
     /* test */
     std::chrono::time_point<std::chrono::steady_clock> times[10];
-    auto df  = load_data();
-    times[0] = std::chrono::steady_clock::now();
-    print_number_vendor_ids_and_unique(df);
-    times[1] = std::chrono::steady_clock::now();
-    print_passage_counts_by_vendor_id(df, 1);
-    times[2] = std::chrono::steady_clock::now();
-    print_passage_counts_by_vendor_id(df, 2);
-    times[3] = std::chrono::steady_clock::now();
-    calculate_trip_duration(df);
-    times[0] = std::chrono::steady_clock::now();
-    print_number_vendor_ids_and_unique(df);
-    times[1] = std::chrono::steady_clock::now();
-    print_passage_counts_by_vendor_id(df, 1);
-    times[2] = std::chrono::steady_clock::now();
-    print_passage_counts_by_vendor_id(df, 2);
-    times[3] = std::chrono::steady_clock::now();
-    calculate_trip_duration(df);
-    times[4] = std::chrono::steady_clock::now();
-    calculate_distribution_store_and_fwd_flag(df);
-    times[5] = std::chrono::steady_clock::now();
-    calculate_haversine_distance_column(df);
-    times[6] = std::chrono::steady_clock::now();
-    analyze_trip_timestamp(df);
-    times[7] = std::chrono::steady_clock::now();
-    analyze_trip_durations_of_timestamps<char>(df, "pickup_day");
-    times[8] = std::chrono::steady_clock::now();
-    analyze_trip_durations_of_timestamps<char>(df, "pickup_month");
-    times[9] = std::chrono::steady_clock::now();
+    {
+        auto df  = load_data();
+        times[0] = std::chrono::steady_clock::now();
+        print_number_vendor_ids_and_unique(df);
+        times[1] = std::chrono::steady_clock::now();
+        print_passage_counts_by_vendor_id(df, 1);
+        times[2] = std::chrono::steady_clock::now();
+        print_passage_counts_by_vendor_id(df, 2);
+        times[3] = std::chrono::steady_clock::now();
+        calculate_trip_duration(df);
+        times[4] = std::chrono::steady_clock::now();
+        calculate_distribution_store_and_fwd_flag(df);
+        times[5] = std::chrono::steady_clock::now();
+        calculate_haversine_distance_column(df);
+        times[6] = std::chrono::steady_clock::now();
+        analyze_trip_timestamp(df);
+        times[7] = std::chrono::steady_clock::now();
+        analyze_trip_durations_of_timestamps<char>(df, "pickup_day");
+        times[8] = std::chrono::steady_clock::now();
+        analyze_trip_durations_of_timestamps<char>(df, "pickup_month");
+        times[9] = std::chrono::steady_clock::now();
 
-    for (uint32_t i = 1; i < std::size(times); i++) {
-        std::cout << "Step " << i << ": "
-                  << std::chrono::duration_cast<std::chrono::microseconds>(times[i] - times[i - 1])
-                         .count()
-                  << " us" << std::endl;
+        for (uint32_t i = 1; i < std::size(times); i++) {
+            std::cout << "Step " << i << ": "
+                      << std::chrono::duration_cast<std::chrono::microseconds>(times[i] -
+                                                                               times[i - 1])
+                             .count()
+                      << " us" << std::endl;
+        }
+        std::cout
+            << "Total: "
+            << std::chrono::duration_cast<std::chrono::microseconds>(times[9] - times[0]).count()
+            << " us" << std::endl;
     }
-    std::cout << "Total: "
-              << std::chrono::duration_cast<std::chrono::microseconds>(times[9] - times[0]).count()
-              << " us" << std::endl;
-
     /* destroy runtime */
     FarLib::runtime_destroy();
 #ifdef STANDALONE

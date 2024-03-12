@@ -35,7 +35,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <functional>
+#include <iostream>
 #include <iterator>
 #include <map>
 #include <numeric>
@@ -1774,7 +1776,6 @@ struct KthValueVisitor {
     inline value_type find_kth_element_(It begin, It end, size_type k) const
     {
         const size_type vec_size = std::distance(begin, end);
-
         if (k > vec_size || k <= 0) {
             char err[512];
 
@@ -1788,10 +1789,12 @@ struct KthValueVisitor {
             throw NotFeasible(err);
         }
 
-        std::vector<value_type> tmp_vec(vec_size - 1);
-        value_type kth_value  = *(begin + static_cast<long>(vec_size / 2));
-        size_type less_count  = 0;
-        size_type great_count = vec_size - 2;
+        value_type kth_value = *(begin + rand() % vec_size);
+        // original DataFrame groupby is wrong!
+        // TODO avoid O(n^2)
+        std::vector<value_type> tmp_vec(vec_size);
+        size_type less_count          = 0;
+        size_type less_or_equal_count = vec_size - 1;
 
         for (auto citer = begin; citer < end; ++citer) {
             if (skip_nan_ && is_nan__(*citer)) continue;
@@ -1799,17 +1802,42 @@ struct KthValueVisitor {
             if (*citer < kth_value)
                 tmp_vec[less_count++] = *citer;
             else if (*citer > kth_value)
-                tmp_vec[great_count--] = *citer;
+                tmp_vec[less_or_equal_count--] = *citer;
         }
-
+        // std::cout << "vec size: " << vec_size << ", k = " << k << std::endl;
+        // std::cout << "pivot: " << kth_value << ", less count: " << less_count
+        //           << ", less/equal count: " << less_or_equal_count << std::endl;
         if (less_count > k - 1)
             return (find_kth_element_(tmp_vec.begin(), tmp_vec.begin() + less_count, k));
-        else if (less_count < k - 1)
-            return (
-                find_kth_element_(tmp_vec.begin() + less_count, tmp_vec.end(), k - less_count - 1));
+        else if (less_or_equal_count < k - 1)
+            return (find_kth_element_(tmp_vec.begin() + less_or_equal_count + 1, tmp_vec.end(),
+                                      k - less_or_equal_count - 1));
         else
             return (kth_value);
     }
+
+    //     using std_iter = decltype(std::vector<value_type>::iterator);
+    //     template <>
+    //     inline value_type find_kth_element_<std_iter>(std_iter begin, std_iter end, size_type k)
+    //     {
+    //         const size_t vec_size = std::distance(end - begin);
+    //         std::vector<value_type> tmp_vec(vec_size, )
+    //         while (true) {
+    //             if (k > vec_size || k <= 0) {
+    //                 char err[512];
+
+    //                 sprintf(err,
+    // #ifdef _WIN32
+    //                         "find_kth_element_(): vector length = %zu and k = %zu.",
+    // #else
+    //                         "find_kth_element_(): vector length = %lu and k = %lu.",
+    // #endif  // _WIN32
+    //                         vec_size, k);
+    //                 throw NotFeasible(err);
+    //             }
+    //             value_type kth_value = *(begin + )
+    //         }
+    //     }
 };
 
 // ----------------------------------------------------------------------------

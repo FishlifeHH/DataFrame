@@ -31,6 +31,10 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <algorithm>
 
+#include "cache/accessor.hpp"
+#include "option.hpp"
+#include "utils/parallel.hpp"
+
 // ----------------------------------------------------------------------------
 
 namespace hmdf
@@ -116,24 +120,74 @@ void HeteroVector::emplace(ITR pos, Args&&... args)
 
 // ----------------------------------------------------------------------------
 
-template <typename T, typename U>
+template <Algorithm alg, typename T, typename U>
 void HeteroVector::visit_impl_help_(T& visitor)
 {
+    using namespace FarLib;
+    using namespace FarLib::cache;
     auto iter = vectors_<U>.find(this);
-
-    if (iter != vectors_<U>.end())
-        for (auto&& element : iter->second) visitor(element);
+    if (iter != vectors_<U>.end()) {
+        if constexpr (alg == DEFAULT) {
+            for (auto&& element : iter->second) visitor(element);
+        } else if constexpr (alg == UTHREAD) {
+            uthread::parallel_for_with_scope<1>(
+                uthread::get_worker_count(), iter->second.size(),
+                [&](size_t i, DereferenceScope& scope) {
+                    ON_MISS_BEGIN
+                    uthread::yield();
+                    ON_MISS_END
+                    visitor(*(iter->second.at(i, scope, __on_miss__)));
+                });
+        } else if constexpr (alg == PREFETCH) {
+            RootDereferenceScope scope;
+            size_t vec_size = iter->second.size();
+            auto it         = iter->second.clbegin(scope);
+            for (size_t i = 0; i < vec_size; i++, it.next(scope)) {
+                visitor(*it);
+            }
+        } else if constexpr (alg == PARAROUTINE) {
+            TODO("not implemented");
+        } else {
+            ERROR("alg dont exist");
+        }
+    }
 }
 
 // ----------------------------------------------------------------------------
 
-template <typename T, typename U>
+template <Algorithm alg, typename T, typename U>
 void HeteroVector::visit_impl_help_(T& visitor) const
 {
+    using namespace FarLib;
+    using namespace FarLib::cache;
+
     const auto citer = vectors_<U>.find(this);
 
-    if (citer != vectors_<U>.end())
-        for (auto&& element : citer->second) visitor(element);
+    if (citer != vectors_<U>.end()) {
+        if constexpr (alg == DEFAULT) {
+            for (auto&& element : citer->second) visitor(element);
+        } else if constexpr (alg == UTHREAD) {
+            uthread::parallel_for_with_scope<1>(
+                uthread::get_worker_count(), citer->second.size(),
+                [&](size_t i, DereferenceScope& scope) {
+                    ON_MISS_BEGIN
+                    uthread::yield();
+                    ON_MISS_END
+                    visitor(*(citer->second.at(i, scope, __on_miss__)));
+                });
+        } else if constexpr (alg == PREFETCH) {
+            RootDereferenceScope scope;
+            size_t vec_size = citer->second.size();
+            auto it         = citer->second.clbegin(scope);
+            for (size_t i = 0; i < vec_size; i++, it.next(scope)) {
+                visitor(*it);
+            }
+        } else if constexpr (alg == PARAROUTINE) {
+            TODO("not implemented");
+        } else {
+            ERROR("alg dont exist");
+        }
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -154,7 +208,7 @@ void HeteroVector::change_impl_help_(T& functor)
     auto iter = vectors_<U>.find(this);
 
     if (iter != vectors_<U>.end())
-        // TODO use view / multithread / scope
+        // TODO opt use view / multithread / scope
         functor(iter->second);
 }
 
@@ -230,7 +284,7 @@ void HeteroVector::erase(size_type pos)
 template <typename T>
 void HeteroVector::resize(size_type count)
 {
-    get_vector<T>().resize(count);
+    get_vector<T>().template resize<true>(count);
 }
 
 // ----------------------------------------------------------------------------

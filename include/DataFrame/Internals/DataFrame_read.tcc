@@ -611,8 +611,11 @@ auto read_csv(std::string csv_file_path, Strs... data_col_names)
         [&]<typename T, T... ints>(std::integer_sequence<T, ints...> int_seq) {
             num_rows = std::max({std::get<ints>(vecs).size()...});
         }(seq);
-        for (IndexType i = 0; i < num_rows; i++) {
-            index_vec.push_back(i);
+        {
+            RootDereferenceScope scope;
+            for (IndexType i = 0; i < num_rows; i++) {
+                index_vec.push_back(i, scope);
+            }
         }
         df.load_index(std::move(index_vec));
     } else {

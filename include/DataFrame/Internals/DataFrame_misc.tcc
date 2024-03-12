@@ -34,6 +34,10 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <cstring>
 #include <random>
 
+#include "cache/accessor.hpp"
+#include "option.hpp"
+#include "utils/debug.hpp"
+#include "utils/parallel.hpp"
 // ----------------------------------------------------------------------------
 
 namespace hmdf
@@ -75,6 +79,15 @@ void DataFrame<I, H>::sort_functor_<Ts...>::operator()(T2& vec)
 {
     sorted_idxs_copy = sorted_idxs;
     _sort_by_sorted_index_(vec, sorted_idxs_copy, idx_s);
+    return;
+}
+
+template <typename I, typename H>
+template <Algorithm alg, typename... Ts>
+template <typename T2>
+void DataFrame<I, H>::sort_copy_functor_<alg, Ts...>::operator()(T2& vec)
+{
+    _sort_by_sorted_index_copy_<alg>(vec, sorted_idxs, idx_s);
     return;
 }
 
@@ -163,8 +176,10 @@ void DataFrame<I, H>::groupby_functor_<F, Ts...>::operator()(const T& vec)
         visitor(index_vec.begin() + begin, index_vec.begin() + end, index_vec.begin() + begin,
                 index_vec.begin() + end);
         visitor.post();
-
-        df.append_index(visitor.get_result());
+        {
+            RootDereferenceScope scope;
+            df.append_index(visitor.get_result(), scope);
+        }
     } else {
         using VecType   = typename std::remove_reference<T>::type;
         using ValueType = typename VecType::value_type;
@@ -177,7 +192,11 @@ void DataFrame<I, H>::groupby_functor_<F, Ts...>::operator()(const T& vec)
                 vec.begin() + vec_end);
         visitor.post();
 
-        df.append_column<ValueType>(name, visitor.get_result(), nan_policy::dont_pad_with_nans);
+        {
+            RootDereferenceScope scope;
+            df.append_column<ValueType>(name, visitor.get_result(), scope,
+                                        nan_policy::dont_pad_with_nans);
+        }
     }
     return;
 }
@@ -657,6 +676,29 @@ void DataFrame<I, H>::sel_load_functor_<IT, Ts...>::operator()(const T& vec)
     return;
 }
 
+template <typename I, typename H>
+template <Algorithm alg, typename IT, typename... Ts>
+template <typename T>
+void DataFrame<I, H>::alg_sel_load_functor_<alg, IT, Ts...>::operator()(
+    const FarLib::FarVector<T>& vec)
+{
+    using namespace FarLib;
+    using namespace FarLib::cache;
+    using ValueType = typename FarLib::FarVector<T>::value_type;
+    auto start      = get_cycles();
+
+    auto new_col = vec.copy_data_by_idx(sel_indices);
+    auto end     = get_cycles();
+    std::cout << "new col get: " << end - start << std::endl;
+
+    start = get_cycles();
+
+    df.load_column<alg, T>(name, std::move(new_col), nan_policy::dont_pad_with_nans);
+    end = get_cycles();
+    std::cout << "load column: " << end - start << std::endl;
+
+    return;
+}
 // ----------------------------------------------------------------------------
 
 template <typename I, typename H>

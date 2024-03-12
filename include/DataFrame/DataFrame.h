@@ -42,11 +42,14 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <tuple>
 #include <typeindex>
 
+#include "cache/accessor.hpp"
+#include "option.hpp"
+
 // ----------------------------------------------------------------------------
 
 namespace hmdf
 {
-
+using namespace FarLib::cache;
 // I: Index (e.g. Timestamp) type. Although an index column need not necessarily
 //    represent time, it could be any built-in or user-defined type.
 // H: See the static assert below. It can only be either
@@ -178,7 +181,7 @@ class LIBRARY_API DataFrame : public ThreadGranularity
     //   Type of the iterator
     //
     template <typename ITR>
-    size_type load_index(const ITR& begin, const ITR& end);
+    size_type load_index(const ITR& begin, const ITR& end, DereferenceScope& scope);
 
     // It moves the idx vector into the index column.
     //
@@ -229,6 +232,10 @@ class LIBRARY_API DataFrame : public ThreadGranularity
     template <typename T>
     size_type load_column(const char* name, const typename H::WrappedVector<T>& data,
                           nan_policy padding = nan_policy::pad_with_nans);
+
+    template <Algorithm alg, typename T>
+    size_type load_column(const char* name, typename H::WrappedVector<T>&& data,
+                          nan_policy padding = nan_policy::pad_with_nans);
     // This method creates a column similar to above, but assumes data is
     // bucket or bar values. That means the data vector contains statistical
     // figure(s) for time buckets and must be aligned with the index column
@@ -274,7 +281,7 @@ class LIBRARY_API DataFrame : public ThreadGranularity
 
     // It appends val to the end of the index column.
     //
-    size_type append_index(const IndexType& val);
+    size_type append_index(const IndexType& val, DereferenceScope& scope);
 
     // It appends val to the end of the named data column.
     // If data column doesn't exist, it throws an exception.
@@ -288,7 +295,7 @@ class LIBRARY_API DataFrame : public ThreadGranularity
     //   index column.
     //
     template <typename T>
-    size_type append_column(const char* name, const T& val,
+    size_type append_column(const char* name, const T& val, DereferenceScope& scope,
                             nan_policy padding = nan_policy::pad_with_nans);
 
     // It appends the range begin to end to the end of the index column
@@ -741,7 +748,7 @@ class LIBRARY_API DataFrame : public ThreadGranularity
     // dir:
     //   Direction of sorting, ascending or descending
     //
-    template <typename T, typename... Ts>
+    template <Algorithm alg, typename T, typename... Ts>
     void sort(const char* name, sort_spec dir);
 
     // This sort function sorts DataFrame based on two columns, also
@@ -839,7 +846,7 @@ class LIBRARY_API DataFrame : public ThreadGranularity
     //   If the DataFrame is already sorted by gb_col_name, this will save the
     //   expensive sort operation
     //
-    template <typename F, typename T, typename... Ts>
+    template <Algorithm alg, typename F, typename T, typename... Ts>
     [[nodiscard]] DataFrame groupby(F&& func, const char* gb_col_name,
                                     sort_state already_sorted = sort_state::not_sorted) const;
 
@@ -1191,8 +1198,8 @@ class LIBRARY_API DataFrame : public ThreadGranularity
     // T:
     //   Data type of the named column
     //
-    template <typename T>
-    [[nodiscard]] std::vector<T> get_col_unique_values(const char* name) const;
+    template <Algorithm alg, typename T>
+    [[nodiscard]] FarLib::FarVector<T> get_col_unique_values(const char* name) const;
 
     // It returns a DataFrame (including the index and data columns)
     // containing the data from index begin to index end.
@@ -1361,7 +1368,7 @@ class LIBRARY_API DataFrame : public ThreadGranularity
     // sel_functor:
     //   A reference to the selecting functor
     //
-    template <typename T, typename F, typename... Ts>
+    template <Algorithm alg, typename T, typename F, typename... Ts>
     [[nodiscard]] DataFrame get_data_by_sel(const char* name, F& sel_functor) const;
 
     // This is identical with above get_data_by_sel(), but:
@@ -1739,13 +1746,13 @@ class LIBRARY_API DataFrame : public ThreadGranularity
     // NOTE: The second member of pair is a _pointer_ to the function or
     //       functor object
     //
-    template <typename... Ts>
+    template <Algorithm alg, typename... Ts>
     void multi_visit(Ts... args);
 
-    template <typename... Ts>
+    template <Algorithm alg, typename... Ts>
     void multi_visit(Ts... args) const
     {
-        const_cast<DataFrame*>(this)->multi_visit<Ts...>(args...);
+        const_cast<DataFrame*>(this)->multi_visit<alg, Ts...>(args...);
     }
 
     // It passes the values of each index and each named column to the
@@ -1760,13 +1767,13 @@ class LIBRARY_API DataFrame : public ThreadGranularity
     // name:
     //   Name of the data column
     //
-    template <typename T, typename V>
+    template <Algorithm alg, typename T, typename V>
     V& visit(const char* name, V& visitor);
 
-    template <typename T, typename V>
+    template <Algorithm alg, typename T, typename V>
     V& visit(const char* name, V& visitor) const
     {
-        return (const_cast<DataFrame*>(this)->visit<T, V>(name, visitor));
+        return (const_cast<DataFrame*>(this)->visit<alg, T, V>(name, visitor));
     }
 
     // These are identical to above visit() but could execute asynchronously.
@@ -2301,6 +2308,9 @@ class LIBRARY_API DataFrame : public ThreadGranularity
 
     template <typename CF, typename... Ts>
     static void sort_common_(DataFrame<I, H>& df, CF&& comp_func);
+
+    template <Algorithm alg, bool Ascend, typename T, typename... Ts>
+    static void sort_common_(DataFrame<I, H>& df, const FarLib::FarVector<T>& vec);
 
     template <typename T>
     static void fill_missing_value_(ColumnVecType<T>& vec, const T& value, int limit,

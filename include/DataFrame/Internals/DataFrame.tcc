@@ -31,31 +31,146 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <DataFrame/GroupbyAggregators.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <cstring>
 #include <functional>
 #include <future>
 #include <limits>
 #include <random>
 
+#include "cache/accessor.hpp"
+#include "option.hpp"
+#include "utils/parallel.hpp"
+
 // ----------------------------------------------------------------------------
 
 namespace hmdf
 {
-
 template <typename I, typename H>
 template <typename CF, typename... Ts>
 void DataFrame<I, H>::sort_common_(DataFrame<I, H>& df, CF&& comp_func)
 {
+    // const size_type idx_s = df.indices_.size();
+    // FarLib::FarVector<size_type> sorting_idxs(idx_s);
+    // FarLib::FarVector<size_type>::iota(sorting_idxs.lbegin(), sorting_idxs.lend(), 0);
+    // FarLib::FarVector<size_type>::sort(sorting_idxs.lbegin(), sorting_idxs.lend(), comp_func);
+
+    // sort_functor_<Ts...> functor(sorting_idxs, idx_s);
+
+    // for (auto& iter : df.data_) iter.change(functor);
+    // _sort_by_sorted_index_(df.indices_, sorting_idxs, idx_s);
+    ERROR("not implemented");
+}
+
+template <typename I, typename H>
+template <Algorithm alg, bool Ascend, typename T, typename... Ts>
+void DataFrame<I, H>::sort_common_(DataFrame<I, H>& df, const FarLib::FarVector<T>& vec)
+{
+    using namespace FarLib;
+    using namespace FarLib::cache;
+    if (!(sizeof(T) <= 2 && std::is_integral<T>::value)) {
+        ERROR("T is too big for count sort");
+    }
     const size_type idx_s = df.indices_.size();
-    FarLib::FarVector<size_type> sorting_idxs(idx_s);
-    FarLib::FarVector<size_type>::iota(sorting_idxs.lbegin(), sorting_idxs.lend(), 0);
-    FarLib::FarVector<size_type>::sort(sorting_idxs.lbegin(), sorting_idxs.lend(), comp_func,
-                                       nullptr);
+    FarLib::FarVector<size_type> sorting_idxs;
+    {
+        using namespace FarLib::cache;
+        constexpr int64_t T_max     = std::numeric_limits<T>::max();
+        constexpr int64_t T_min     = std::numeric_limits<T>::min();
+        constexpr int64_t cnts_size = T_max - T_min + 1;
+        auto cnts                   = std::make_unique<uint64_t[]>(cnts_size);
+        memset(cnts.get(), 0, sizeof(uint64_t) * cnts_size);
+        if constexpr (alg == UTHREAD) {
+            // this alg is unstable
+            size_t thread_nums = uthread::get_worker_count() * UTH_FACTOR;
+            std::vector<std::array<uint64_t, cnts_size>> cnt_threads(thread_nums);
+            size_t block = (vec.size() + thread_nums - 1);
+            uthread::parallel_for_with_scope<1>(
+                thread_nums, thread_nums, [&](size_t i, DereferenceScope& scope) {
+                    ON_MISS_BEGIN
+                    uthread::yield();
+                    ON_MISS_END
+                    for (size_t idx = i * block; idx < std::min((i + 1) * block, vec.size());
+                         idx++) {
+                        T elem = *(vec.at(idx, scope, __on_miss__));
+                        cnt_threads[i][elem - T_min]++;
+                    }
+                });
+            for (uint64_t i = 0; i < cnts_size; i++) {
+                uint64_t temp_cnt = 0;
+                for (size_t ti = 0; ti < thread_nums; ti++) {
+                    temp_cnt += cnt_threads[ti][i];
+                }
+                cnts[i] += temp_cnt;
+            }
+            for (uint64_t i = 1; i < cnts_size; i++) {
+                cnts[i] += cnts[i - 1];
+            }
+            const size_t vec_size = vec.size();
+            sorting_idxs.template resize<true>(vec.size());
+            uthread::parallel_for_with_scope<1>(
+                thread_nums, vec_size, [&](size_t i, DereferenceScope& scope) {
+                    ON_MISS_BEGIN
+                    uthread::yield();
+                    ON_MISS_END
+                    T elem   = *(vec.at(vec_size - 1 - i, scope, __on_miss__));
+                    auto idx = --cnts[elem - T_min];
+                    if constexpr (!Ascend) {
+                        idx = vec_size - idx - 1;
+                    }
+                    *(sorting_idxs.at_mut(vec_size - 1 - i, scope, __on_miss__)) = idx;
+                });
+        } else if constexpr (alg == PREFETCH) {
+            {
+                RootDereferenceScope scope;
+                for (auto it = vec.clbegin(scope); it < vec.clend(); it.next(scope)) {
+                    cnts[*it - T_min]++;
+                }
+            }
+            for (uint64_t i = 1; i < cnts_size; i++) {
+                cnts[i] += cnts[i - 1];
+            }
+            sorting_idxs.template resize<true>(vec.size());
+            struct Scope : public RootDereferenceScope {
+                decltype(vec.clbegin()) vec_it;
+                decltype(sorting_idxs.lbegin()) idx_it;
 
-    sort_functor_<Ts...> functor(sorting_idxs, idx_s);
+                void pin() const override
+                {
+                    vec_it.pin();
+                    idx_it.pin();
+                }
 
-    for (auto& iter : df.data_) iter.change(functor);
-    _sort_by_sorted_index_(df.indices_, sorting_idxs, idx_s);
+                void unpin() const override
+                {
+                    vec_it.unpin();
+                    idx_it.unpin();
+                }
+            } scope;
+            scope.vec_it    = vec.clend(scope);
+            scope.idx_it    = sorting_idxs.lend(scope);
+            size_t vec_size = vec.size();
+            for (int64_t i = vec_size - 1; i >= 0; --i) {
+                scope.vec_it.prev(scope);
+                scope.idx_it.prev(scope);
+                auto idx = --cnts[*(scope.vec_it) - T_min];
+                if constexpr (!Ascend) {
+                    idx = vec_size - idx - 1;
+                }
+                *(scope.idx_it) = idx;
+            }
+        } else if constexpr (alg == PARAROUTINE) {
+            TODO("pararoutine sort common");
+        } else {
+            ERROR("alg dont exist");
+        }
+    }
+    sort_copy_functor_<alg, Ts...> functor(sorting_idxs, idx_s);
+    for (auto& iter : df.data_) {
+        iter.change(functor);
+    }
+    _sort_by_sorted_index_copy_<alg>(df.indices_, sorting_idxs, idx_s);
 }
 
 // ----------------------------------------------------------------------------
@@ -553,37 +668,46 @@ void DataFrame<I, H>::shrink_to_fit()
 }
 
 // ----------------------------------------------------------------------------
-
 template <typename I, typename H>
-template <typename T, typename... Ts>
+template <Algorithm alg, typename T, typename... Ts>
 void DataFrame<I, H>::sort(const char* name, sort_spec dir)
 {
     make_consistent<Ts...>();
+    if constexpr (alg == DEFAULT) {
+        if (!::strcmp(name, DF_INDEX_COL_NAME)) {
+            auto a = [](const T& t1, const T& t2) -> bool { return t1 < t2; };
+            auto d = [](const T& t1, const T& t2) -> bool { return t1 > t2; };
 
-    if (!::strcmp(name, DF_INDEX_COL_NAME)) {
-        auto a = [this](size_type i, size_type j) -> bool {
-            return (*(this->indices_[i]) < *(this->indices_[j]));
-        };
-        auto d = [this](size_type i, size_type j) -> bool {
-            return (*(this->indices_[i]) > *(this->indices_[j]));
-        };
+            if (dir == sort_spec::ascen)
+                sort_common_<decltype(a), Ts...>(*this, std::move(a));
+            else
+                sort_common_<decltype(d), Ts...>(*this, std::move(d));
+        } else {
+            const ColumnVecType<T>& idx_vec = get_column<T>(name);
 
-        if (dir == sort_spec::ascen)
-            sort_common_<decltype(a), Ts...>(*this, std::move(a));
-        else
-            sort_common_<decltype(d), Ts...>(*this, std::move(d));
+            auto a = [](const T& t1, const T& t2) -> bool { return t1 < t2; };
+            auto d = [](const T& t1, const T& t2) -> bool { return t1 < t2; };
+
+            if (dir == sort_spec::ascen)
+                sort_common_<decltype(a), Ts...>(*this, std::move(a));
+            else
+                sort_common_<decltype(d), Ts...>(*this, std::move(d));
+        }
     } else {
-        const ColumnVecType<T>& idx_vec = get_column<T>(name);
-
-        auto a = [&x = idx_vec](size_type i, size_type j) -> bool { return (*(x[i]) < *(x[j])); };
-        auto d = [&x = idx_vec](size_type i, size_type j) -> bool { return (*(x[i]) > *(x[j])); };
-
-        if (dir == sort_spec::ascen)
-            sort_common_<decltype(a), Ts...>(*this, std::move(a));
-        else
-            sort_common_<decltype(d), Ts...>(*this, std::move(d));
+        if (!::strcmp(name, DF_INDEX_COL_NAME)) {
+            if (dir == sort_spec::ascen) {
+                sort_common_<alg, true, typename IndexVecType::value_type, Ts...>(*this, indices_);
+            } else {
+                sort_common_<alg, false, typename IndexVecType::value_type, Ts...>(*this, indices_);
+            }
+        }
+        auto& idx_vec = get_column<T>(name);
+        if (dir == sort_spec::ascen) {
+            sort_common_<alg, true, T, Ts...>(*this, idx_vec);
+        } else {
+            sort_common_<alg, false, T, Ts...>(*this, idx_vec);
+        }
     }
-
     return;
 }
 
@@ -934,14 +1058,24 @@ std::future<void> DataFrame<I, H>::sort_async(const char* name1, sort_spec dir1,
 // ----------------------------------------------------------------------------
 
 template <typename I, typename H>
-template <typename F, typename T, typename... Ts>
+template <Algorithm alg, typename F, typename T, typename... Ts>
 DataFrame<I, H> DataFrame<I, H>::groupby(F&& func, const char* gb_col_name,
                                          sort_state already_sorted) const
 {
     DataFrame tmp_df = *this;
 
     if (already_sorted == sort_state::not_sorted)
-        tmp_df.sort<T, Ts...>(gb_col_name, sort_spec::ascen);
+        tmp_df.sort<alg, T, Ts...>(gb_col_name, sort_spec::ascen);
+
+    // auto& index_vec    = tmp_df.get_index();
+    // auto& key_vec      = tmp_df.get_column<T>(gb_col_name);
+    // auto& duration_vec = tmp_df.get_column<uint64_t>("duration");
+
+    // for (uint64_t i = 0; i < key_vec.size(); i++) {
+    //     std::cout << *(index_vec[i]) << " " << static_cast<int>(*key_vec[i]) << " "
+    //               << *duration_vec[i] << std::endl;
+    // }
+    // abort();
 
     DataFrame result;
 
@@ -958,7 +1092,10 @@ DataFrame<I, H> DataFrame<I, H>::groupby(F&& func, const char* gb_col_name,
 
         for (size_type i = 0; i < vec_size; ++i) {
             if (*tmp_df.indices_[i] != *tmp_df.indices_[marker]) {
-                result.append_index(*tmp_df.indices_[marker]);
+                {
+                    RootDereferenceScope scope;
+                    result.append_index(*tmp_df.indices_[marker], scope);
+                }
                 for (const auto& iter : tmp_df.column_tb_) {
                     groupby_functor_<F, Ts...> functor(iter.first.c_str(), marker, i,
                                                        tmp_df.indices_, func, result);
@@ -970,7 +1107,10 @@ DataFrame<I, H> DataFrame<I, H>::groupby(F&& func, const char* gb_col_name,
             }
         }
         if (marker < vec_size) {
-            result.append_index(*tmp_df.indices_[vec_size - 1]);
+            {
+                RootDereferenceScope scope;
+                result.append_index(*tmp_df.indices_[vec_size - 1], scope);
+            }
             for (const auto& iter : tmp_df.column_tb_) {
                 groupby_functor_<F, Ts...> functor(iter.first.c_str(), marker, vec_size,
                                                    tmp_df.indices_, func, result);
@@ -988,8 +1128,11 @@ DataFrame<I, H> DataFrame<I, H>::groupby(F&& func, const char* gb_col_name,
                                                           tmp_df.indices_, func, result);
 
                 ts_functor(tmp_df.indices_);
-                result.append_column<T>(gb_col_name, *gb_vec[marker],
-                                        nan_policy::dont_pad_with_nans);
+                {
+                    RootDereferenceScope scope;
+                    result.append_column<T>(gb_col_name, *gb_vec[marker], scope,
+                                            nan_policy::dont_pad_with_nans);
+                }
 
                 for (const auto& iter : tmp_df.column_tb_) {
                     if (iter.first != gb_col_name) {
@@ -1009,8 +1152,11 @@ DataFrame<I, H> DataFrame<I, H>::groupby(F&& func, const char* gb_col_name,
                                                       tmp_df.indices_, func, result);
 
             ts_functor(tmp_df.indices_);
-            result.append_column<T>(gb_col_name, *gb_vec[vec_size - 1],
-                                    nan_policy::dont_pad_with_nans);
+            {
+                RootDereferenceScope scope;
+                result.append_column<T>(gb_col_name, *gb_vec[vec_size - 1], scope,
+                                        nan_policy::dont_pad_with_nans);
+            }
 
             for (const auto& iter : tmp_df.column_tb_) {
                 if (iter.first != gb_col_name) {

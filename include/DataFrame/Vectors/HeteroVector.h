@@ -35,6 +35,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <unordered_map>
 
 #include "data_structure/far_vector.hpp"
+#include "option.hpp"
 // ----------------------------------------------------------------------------
 
 namespace hmdf
@@ -200,9 +201,9 @@ struct HeteroVector {
 
     // Visitor stuff
     //
-    template <typename T, typename U>
+    template <Algorithm alg, typename T, typename U>
     void visit_impl_help_(T& visitor);
-    template <typename T, typename U>
+    template <Algorithm alg, typename T, typename U>
     void visit_impl_help_(T& visitor) const;
 
     template <typename T, typename U>
