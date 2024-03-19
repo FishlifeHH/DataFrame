@@ -577,11 +577,12 @@ int main(int argc, const char* argv[])
 #endif
     config.evict_batch_size = 64 * 1024;
 #else
-    if (argc != 2) {
-        std::cout << "usage: " << argv[0] << " <configure file> " << std::endl;
-        return -1;
-    }
+    // if (argc != 2) {
+    //     std::cout << "usage: " << argv[0] << " <configure file> " << std::endl;
+    //     return -1;
+    // }
     config.from_file(argv[1]);
+    config.client_buffer_size = std::stoul(argv[2]);
 #endif
 
     /* client-server connection */

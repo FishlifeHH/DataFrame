@@ -141,6 +141,15 @@ static inline void _sort_by_sorted_index_copy_(FarLib::FarVector<T>& to_be_sorte
             for (uint64_t i = 0; i < sorting_idxs.size();
                  i++, scope.idx_it.next(scope), scope.to_be_sorted_it.next(scope)) {
                 ON_MISS_BEGIN
+                auto idx_it = scope.idx_it;
+                idx_it.next(scope);
+                while (!idx_it.is_null()) {
+                    result.prefetch(*idx_it, scope);
+                    if (cache::check_fetch(__entry__, __ddl__)) {
+                        return;
+                    }
+                    idx_it.next(scope);
+                }
                 ON_MISS_END
                 scope.result_acc    = result.at_mut(*scope.idx_it, scope, __on_miss__);
                 *(scope.result_acc) = *(scope.to_be_sorted_it);

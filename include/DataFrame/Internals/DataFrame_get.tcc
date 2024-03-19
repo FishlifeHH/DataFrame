@@ -991,7 +991,7 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
         }
     } else if constexpr (alg == PREFETCH) {
         // only available if index = [0...idx_s - 1]
-        auto start = get_cycles();
+        // auto start = get_cycles();
         RootDereferenceScope scope;
         auto vec_it = vec.clbegin(scope);
         for (size_t i = 0; i < idx_s; i++, vec_it.next(scope)) {
@@ -999,8 +999,8 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
                 col_indices.push_back(i, scope);
             }
         }
-        auto end = get_cycles();
-        std::cout << "col indices get: " << end - start << std::endl;
+        // auto end = get_cycles();
+        // std::cout << "col indices get: " << end - start << std::endl;
     } else if constexpr (alg == PARAROUTINE) {
         // TODO
         TODO("not implemented");
@@ -1029,7 +1029,7 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
                                                 ;
                                             });
     } else if constexpr (alg == PREFETCH) {
-        auto start = get_cycles();
+        // auto start = get_cycles();
         struct Scope : public RootDereferenceScope {
             decltype(new_index.lbegin()) new_index_it;
             decltype(col_indices.clbegin()) col_indices_it;
@@ -1058,25 +1058,25 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
             ON_MISS_END
             *(scope.new_index_it) = *(scope.col_indices_it);
         }
-        auto end = get_cycles();
-        std::cout << "new index fill: " << end - start << std::endl;
+        // auto end = get_cycles();
+        // std::cout << "new index fill: " << end - start << std::endl;
     } else if constexpr (alg == PARAROUTINE) {
         // TODO
         ERROR("not implemented");
     } else {
         ERROR("algorithm dont exist");
     }
-    auto start = get_cycles();
+    // auto start = get_cycles();
     df.load_index(std::move(new_index));
-    auto end = get_cycles();
-    std::cout << "load index: " << end - start << std::endl;
+    // auto end = get_cycles();
+    // std::cout << "load index: " << end - start << std::endl;
     for (auto col_citer : column_tb_) {
-        auto start = get_cycles();
+        // auto start = get_cycles();
         alg_sel_load_functor_<alg, size_type, Ts...> functor(col_citer.first.c_str(), col_indices,
                                                              idx_s, df);
         data_[col_citer.second].change(functor);
-        auto end = get_cycles();
-        std::cout << "change: " << end - start << std::endl;
+        // auto end = get_cycles();
+        // std::cout << "change: " << end - start << std::endl;
     }
 
     return (df);
