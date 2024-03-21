@@ -31,6 +31,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <cstring>
 
+#include "async/scoped_inline_task.hpp"
 #include "cache/accessor.hpp"
 #include "option.hpp"
 #include "utils/parallel.hpp"
@@ -457,7 +458,60 @@ typename DataFrame<I, H>::size_type DataFrame<I, H>::load_column(
                 *it = _get_nan<T>();
             }
         } else if constexpr (alg == PARAROUTINE) {
-            TODO("not implemented");
+            using data_t = std::remove_reference_t<decltype(data)>;
+            struct Context {
+                data_t* data;
+                decltype(data->lbegin()) it;
+                size_t idx;
+                size_t idx_end;
+                bool fetch_end;
+
+                void pin()
+                {
+                    it.pin();
+                }
+
+                void unpin()
+                {
+                    it.unpin();
+                }
+
+                bool fetched()
+                {
+                    return it.at_local();
+                }
+
+                bool run(DereferenceScope& scope)
+                {
+                    if (fetch_end) {
+                        goto next;
+                    }
+                    while (idx < idx_end) {
+                        it        = data->lbegin().nextn(idx);
+                        fetch_end = true;
+                        if (!it.async_fetch(scope)) {
+                            return false;
+                        }
+                    next:
+                        *it = _get_nan<T>();
+                        idx++;
+                        fetch_end = false;
+                    }
+                    return true;
+                }
+            };
+            data.resize(idx_s);
+            RootDereferenceScope scope;
+            const size_t block =
+                (idx_s - data_s + async::DEFAULT_BATCH_SIZE - 1) / async::DEFAULT_BATCH_SIZE;
+            SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < idx_s - data_s, i += block, scope)
+            return Context{
+                .data      = &data,
+                .idx       = i,
+                .idx_end   = std::min(i + block, idx_s - data_s),
+                .fetch_end = false,
+            };
+            SCOPED_INLINE_ASYNC_FOR_END
         } else {
             ERROR("alg dont exist");
         }

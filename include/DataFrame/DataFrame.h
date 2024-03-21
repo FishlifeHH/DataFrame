@@ -2310,7 +2310,7 @@ class LIBRARY_API DataFrame : public ThreadGranularity
     static void sort_common_(DataFrame<I, H>& df, CF&& comp_func);
 
     template <Algorithm alg, bool Ascend, typename T, typename... Ts>
-    static void sort_common_(DataFrame<I, H>& df, const FarLib::FarVector<T>& vec);
+    static void sort_common_(DataFrame<I, H>& df, FarLib::FarVector<T>& vec);
 
     template <typename T>
     static void fill_missing_value_(ColumnVecType<T>& vec, const T& value, int limit,

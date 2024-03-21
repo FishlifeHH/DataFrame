@@ -39,6 +39,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <limits>
 #include <random>
 
+#include "async/scoped_inline_task.hpp"
 #include "cache/accessor.hpp"
 #include "option.hpp"
 #include "utils/parallel.hpp"
@@ -65,7 +66,7 @@ void DataFrame<I, H>::sort_common_(DataFrame<I, H>& df, CF&& comp_func)
 
 template <typename I, typename H>
 template <Algorithm alg, bool Ascend, typename T, typename... Ts>
-void DataFrame<I, H>::sort_common_(DataFrame<I, H>& df, const FarLib::FarVector<T>& vec)
+void DataFrame<I, H>::sort_common_(DataFrame<I, H>& df, FarLib::FarVector<T>& vec)
 {
     using namespace FarLib;
     using namespace FarLib::cache;
@@ -161,11 +162,120 @@ void DataFrame<I, H>::sort_common_(DataFrame<I, H>& df, const FarLib::FarVector<
                 *(scope.idx_it) = idx;
             }
         } else if constexpr (alg == PARAROUTINE) {
-            TODO("pararoutine sort common");
+            {
+                RootDereferenceScope scope;
+                for (auto it = vec.clbegin(scope); it < vec.clend(); it.next(scope)) {
+                    cnts[*it - T_min]++;
+                }
+            }
+            for (uint64_t i = 1; i < cnts_size; i++) {
+                cnts[i] += cnts[i - 1];
+            }
+            sorting_idxs.template resize<true>(vec.size());
+            using vec_t = std::remove_reference_t<decltype(vec)>;
+            using idx_t = std::remove_reference_t<decltype(sorting_idxs)>;
+            using cnt_t = std::remove_reference_t<decltype(cnts)>;
+            struct Context {
+                vec_t* vec;
+                idx_t* idx_vec;
+                cnt_t* cnts;
+                decltype(vec->clbegin()) vec_it;
+                decltype(idx_vec->lbegin()) idx_it;
+                size_t vec_size;
+                int64_t idx;
+                int64_t idx_end;
+                size_t new_idx;
+                enum Stage { INIT, IDX_FETCHING, VEC_FETCHING } stage;
+
+                void pin()
+                {
+                    vec_it.pin();
+                    idx_it.pin();
+                }
+
+                void unpin()
+                {
+                    vec_it.unpin();
+                    idx_it.unpin();
+                }
+
+                bool fetched()
+                {
+                    switch (stage) {
+                        case IDX_FETCHING:
+                            return idx_it.at_local();
+                        case VEC_FETCHING:
+                            return vec_it.at_local();
+                        case INIT:
+                            return true;
+                        default:
+                            ERROR("stage not exist");
+                    }
+                }
+
+                bool run(DereferenceScope& scope)
+                {
+                    switch (stage) {
+                        case INIT:
+                            break;
+                        case IDX_FETCHING:
+                            goto idx_fetched;
+                        case VEC_FETCHING:
+                            goto vec_fetched;
+                        default:
+                            ERROR("stage not exist");
+                    }
+                    while (idx > idx_end) {
+                        vec_it = vec->clbegin().nextn(idx);
+                        vec_it.async_fetch(scope);
+                        idx_it = idx_vec->lbegin().nextn(idx);
+                        idx_it.async_fetch(scope);
+                        stage = VEC_FETCHING;
+                        if (!fetched()) {
+                            return false;
+                        }
+                    vec_fetched:
+                        new_idx = --(*cnts)[*vec_it - T_min];
+                        if constexpr (!Ascend) {
+                            new_idx = vec_size - new_idx - 1;
+                        }
+                        stage = IDX_FETCHING;
+                        if (!fetched()) {
+                            return false;
+                        }
+                    idx_fetched:
+                        *idx_it = new_idx;
+                        idx--;
+                        stage = INIT;
+                    }
+                    return true;
+                }
+            };
+            RootDereferenceScope scope;
+            const size_t vec_size = vec.size();
+            const int64_t block =
+                (vec_size + async::DEFAULT_BATCH_SIZE - 1) / async::DEFAULT_BATCH_SIZE;
+            SCOPED_INLINE_ASYNC_FOR(Context, int64_t, i, vec_size - 1, i >= 0, i -= block, scope)
+            return Context{
+                .vec      = &vec,
+                .idx_vec  = &sorting_idxs,
+                .cnts     = &cnts,
+                .vec_size = vec.size(),
+                .idx      = i,
+                .idx_end  = std::max(i - block, -1L),
+                .stage    = Context::INIT,
+            };
+            SCOPED_INLINE_ASYNC_FOR_END
         } else {
             ERROR("alg dont exist");
         }
     }
+    // std::cout << "[";
+    // for (size_t i = 0; i < idx_s; i++) {
+    //     std::cout << *(sorting_idxs[i]) << ", " << std::endl;
+    // }
+    // std::cout << "]";
+    // abort();
     sort_copy_functor_<alg, Ts...> functor(sorting_idxs, idx_s);
     for (auto& iter : df.data_) {
         iter.change(functor);
@@ -1067,9 +1177,9 @@ DataFrame<I, H> DataFrame<I, H>::groupby(F&& func, const char* gb_col_name,
     if (already_sorted == sort_state::not_sorted)
         tmp_df.sort<alg, T, Ts...>(gb_col_name, sort_spec::ascen);
 
-    // auto& index_vec    = tmp_df.get_index();
-    // auto& key_vec      = tmp_df.get_column<T>(gb_col_name);
-    // auto& duration_vec = tmp_df.get_column<uint64_t>("duration");
+    auto& index_vec    = tmp_df.get_index();
+    auto& key_vec      = tmp_df.get_column<T>(gb_col_name);
+    auto& duration_vec = tmp_df.get_column<uint64_t>("duration");
 
     // for (uint64_t i = 0; i < key_vec.size(); i++) {
     //     std::cout << *(index_vec[i]) << " " << static_cast<int>(*key_vec[i]) << " "

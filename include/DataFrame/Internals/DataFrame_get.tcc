@@ -35,6 +35,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <random>
 #include <unordered_set>
 
+#include "async/scoped_inline_task.hpp"
 #include "cache/accessor.hpp"
 #include "option.hpp"
 #include "utils/debug.hpp"
@@ -209,8 +210,78 @@ FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values(const char* name) co
             }
         }
     } else if constexpr (alg == PARAROUTINE) {
-        // TODO
-        ERROR("not implemented");
+        using namespace FarLib;
+        using vec_t    = std::remove_reference_t<decltype(vec)>;
+        using result_t = std::remove_reference_t<decltype(result)>;
+        using table_t  = std::remove_reference_t<decltype(table)>;
+        struct Context {
+            vec_t* vec;
+            result_t* result;
+            table_t* table;
+            decltype(vec->clbegin()) citer_it;
+            bool* counted_nan;
+            size_t idx;
+            size_t idx_end;
+            bool fetch_end;
+
+            void pin()
+            {
+                citer_it.pin();
+            }
+
+            void unpin()
+            {
+                citer_it.unpin();
+            }
+
+            bool fetched()
+            {
+                return citer_it.at_local();
+            }
+
+            bool run(DereferenceScope& scope)
+            {
+                if (fetch_end) {
+                    goto next;
+                }
+                while (idx < idx_end) {
+                    citer_it  = vec->clbegin().nextn(idx);
+                    fetch_end = true;
+                    if (!citer_it.async_fetch(scope)) {
+                        return false;
+                    }
+                next:
+                    auto& citer = *citer_it;
+                    if (_is_nan<T>(citer) && !(*counted_nan)) {
+                        *counted_nan = true;
+                        // TODO async push back?
+                        result->push_back(_get_nan<T>(), scope);
+                    } else {
+                        const auto insert_ret = table->emplace(std::ref(citer));
+                        if (insert_ret.second) {
+                            result->push_back(citer, scope);
+                        }
+                    }
+                    idx++;
+                    fetch_end = false;
+                }
+                return true;
+            }
+        };
+        bool counted_nan = false;
+        RootDereferenceScope scope;
+        const size_t block =
+            (vec.size() + async::DEFAULT_BATCH_SIZE - 1) / async::DEFAULT_BATCH_SIZE;
+        SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < vec.size(), i += block, scope)
+        return Context{
+            .vec       = &vec,
+            .result    = &result,
+            .table     = &table,
+            .idx       = i,
+            .idx_end   = std::min(i + block, vec.size()),
+            .fetch_end = false,
+        };
+        SCOPED_INLINE_ASYNC_FOR_END
     } else {
         ERROR("algorithm dont exist");
     }
@@ -310,8 +381,112 @@ V& DataFrame<I, H>::visit(const char* name, V& visitor)
             visitor(*(scope.indices_it), nan_val);
         }
     } else if constexpr (alg == PARAROUTINE) {
-        // TODO
-        ERROR("not implemented");
+        using indices_t = std::remove_reference_t<decltype(indices_)>;
+        using vec_t     = std::remove_reference_t<decltype(vec)>;
+        using visitor_t = std::remove_reference_t<decltype(visitor)>;
+        struct CommonContext {
+            indices_t* indices;
+            visitor_t* visitor;
+            decltype(indices->clbegin()) indice_it;
+            size_t idx;
+            size_t idx_end;
+            bool fetch_end;
+
+            CommonContext(indices_t* indices, visitor_t* visitor, size_t idx, size_t idx_end)
+                : indices(indices), visitor(visitor), idx(idx), idx_end(idx_end), fetch_end(false)
+            {
+            }
+
+            void pin()
+            {
+                indice_it.pin();
+            }
+
+            void unpin()
+            {
+                indice_it.unpin();
+            }
+
+            bool fetched()
+            {
+                return indice_it.at_local();
+            }
+
+            bool run(DereferenceScope& scope)
+            {
+                if (fetch_end) {
+                    goto next;
+                }
+                indice_it = indices->clbegin().nextn(idx);
+                indice_it.async_fetch(scope);
+                fetch_end = true;
+                if (!fetched()) {
+                    return false;
+                }
+            next:
+                T nan_val = _get_nan<T>();
+                (*visitor)(*indice_it, nan_val);
+                return true;
+            }
+        };
+        struct Context : public CommonContext {
+            vec_t* vec;
+            decltype(vec->clbegin()) vec_it;
+
+            Context(indices_t* indices, visitor_t* visitor, size_t idx, size_t idx_end, vec_t* vec)
+                : CommonContext(indices, visitor, idx, idx_end), vec(vec)
+            {
+            }
+            void pin()
+            {
+                CommonContext::pin();
+                vec_it.pin();
+            }
+
+            void unpin()
+            {
+                CommonContext::unpin();
+                vec_it.unpin();
+            }
+
+            bool fetched()
+            {
+                return CommonContext::fetched() && vec_it.at_local();
+            }
+
+            bool run(DereferenceScope& scope)
+            {
+                if (this->fetch_end) {
+                    goto next;
+                }
+                while (this->idx < this->idx_end) {
+                    this->indice_it = this->indices->clbegin().nextn(this->idx);
+                    this->indice_it.async_fetch(scope);
+                    vec_it = vec->clbegin().nextn(this->idx);
+                    vec_it.async_fetch(scope);
+                    this->fetch_end = true;
+                    if (!fetched()) {
+                        return false;
+                    }
+                next:
+                    (*(this->visitor))(*(this->indice_it), *vec_it);
+                    this->idx++;
+                    this->fetch_end = false;
+                }
+                return true;
+            }
+        };
+        RootDereferenceScope scope;
+        const size_t block1 = (min_s + async::DEFAULT_BATCH_SIZE - 1) / async::DEFAULT_BATCH_SIZE;
+        SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < min_s, i += block1, scope)
+        return Context(&indices_, &visitor, i, std::min(i + block1, min_s), &vec);
+        SCOPED_INLINE_ASYNC_FOR_END
+        const size_t block2 =
+            (idx_s - min_s + async::DEFAULT_BATCH_SIZE - 1) / async::DEFAULT_BATCH_SIZE;
+        SCOPED_INLINE_ASYNC_FOR(CommonContext, size_t, i, min_s, i < idx_s, i += block2, scope)
+        return CommonContext(&indices_, &visitor, i, std::min(i + block2, idx_s));
+        SCOPED_INLINE_ASYNC_FOR_END
+
     } else {
         ERROR("algorithm dont exist");
     }
@@ -954,6 +1129,7 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
     const size_type col_s       = vec.size();
     FarLib::FarVector<size_type> col_indices;
     col_indices.reserve(idx_s / 2);
+    auto start = get_cycles();
 
     if constexpr (alg == DEFAULT) {
         for (size_type i = 0; i < col_s; ++i)
@@ -991,7 +1167,6 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
         }
     } else if constexpr (alg == PREFETCH) {
         // only available if index = [0...idx_s - 1]
-        // auto start = get_cycles();
         RootDereferenceScope scope;
         auto vec_it = vec.clbegin(scope);
         for (size_t i = 0; i < idx_s; i++, vec_it.next(scope)) {
@@ -999,18 +1174,78 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
                 col_indices.push_back(i, scope);
             }
         }
-        // auto end = get_cycles();
-        // std::cout << "col indices get: " << end - start << std::endl;
     } else if constexpr (alg == PARAROUTINE) {
-        // TODO
-        TODO("not implemented");
+        using vec_t         = std::remove_reference_t<decltype(vec)>;
+        using sel_functor_t = std::remove_reference_t<decltype(sel_functor)>;
+        using col_indices_t = std::remove_reference_t<decltype(col_indices)>;
+
+        struct Context {
+            vec_t* vec;
+            sel_functor_t* sel;
+            col_indices_t* col_indices;
+            decltype(vec->clbegin()) vec_it;
+            size_t idx;
+            size_t idx_end;
+            bool fetch_end;
+
+            void pin()
+            {
+                vec_it.pin();
+            }
+
+            void unpin()
+            {
+                vec_it.unpin();
+            }
+
+            bool fetched()
+            {
+                return vec_it.at_local();
+            }
+
+            bool run(DereferenceScope& scope)
+            {
+                if (fetch_end) {
+                    goto next;
+                }
+                while (idx < idx_end) {
+                    vec_it    = vec->clbegin().nextn(idx);
+                    fetch_end = true;
+                    if (!vec_it.async_fetch(scope)) {
+                        return false;
+                    }
+                next:
+                    if ((*sel)(idx, *vec_it)) {
+                        col_indices->push_back(idx, scope);
+                    }
+                    idx++;
+                    fetch_end = false;
+                }
+                return true;
+            }
+        };
+        RootDereferenceScope scope;
+        const size_t block = (idx_s + async::DEFAULT_BATCH_SIZE - 1) / async::DEFAULT_BATCH_SIZE;
+        SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < idx_s, i += block, scope)
+        return Context{
+            .vec         = &vec,
+            .sel         = &sel_functor,
+            .col_indices = &col_indices,
+            .idx         = i,
+            .idx_end     = std::min(i + block, idx_s),
+            .fetch_end   = false,
+        };
+        SCOPED_INLINE_ASYNC_FOR_END
     } else {
         ERROR("algorithm dont exist");
     }
+    auto end = get_cycles();
+    std::cout << "col indices get: " << end - start << std::endl;
 
     DataFrame df;
     IndexVecType new_index;
 
+    start = get_cycles();
     new_index.template resize<true>(col_indices.size());
     if constexpr (alg == DEFAULT) {
         for (size_t i = 0; i < col_indices.size(); i++) {
@@ -1029,7 +1264,6 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
                                                 ;
                                             });
     } else if constexpr (alg == PREFETCH) {
-        // auto start = get_cycles();
         struct Scope : public RootDereferenceScope {
             decltype(new_index.lbegin()) new_index_it;
             decltype(col_indices.clbegin()) col_indices_it;
@@ -1058,25 +1292,87 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
             ON_MISS_END
             *(scope.new_index_it) = *(scope.col_indices_it);
         }
-        // auto end = get_cycles();
-        // std::cout << "new index fill: " << end - start << std::endl;
     } else if constexpr (alg == PARAROUTINE) {
-        // TODO
-        ERROR("not implemented");
+        using new_index_t   = std::remove_reference_t<decltype(new_index)>;
+        using col_indices_t = std::remove_reference_t<decltype(col_indices)>;
+
+        struct Context {
+            new_index_t* new_index;
+            col_indices_t* col_indices;
+            decltype(new_index->lbegin()) new_index_it;
+            decltype(col_indices->clbegin()) col_indices_it;
+            size_t idx;
+            size_t idx_end;
+            bool fetch_end;
+
+            void pin()
+            {
+                new_index_it.pin();
+                col_indices_it.pin();
+            }
+
+            void unpin()
+            {
+                new_index_it.unpin();
+                col_indices_it.unpin();
+            }
+
+            bool fetched()
+            {
+                return new_index_it.at_local() && col_indices_it.at_local();
+            }
+
+            bool run(DereferenceScope& scope)
+            {
+                if (fetch_end) {
+                    goto next;
+                }
+                while (idx < idx_end) {
+                    new_index_it = new_index->lbegin().nextn(idx);
+                    new_index_it.async_fetch(scope);
+                    col_indices_it = col_indices->clbegin().nextn(idx);
+                    col_indices_it.async_fetch(scope);
+                    fetch_end = true;
+                    if (!fetched()) {
+                        return false;
+                    }
+                next:
+                    *new_index_it = *col_indices_it;
+                    idx++;
+                    fetch_end = false;
+                }
+                return true;
+            }
+        };
+        RootDereferenceScope scope;
+        const size_t block =
+            (col_indices.size() + async::DEFAULT_BATCH_SIZE - 1) / async::DEFAULT_BATCH_SIZE;
+        SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < col_indices.size(), i += block, scope)
+        return Context{
+            .new_index   = &new_index,
+            .col_indices = &col_indices,
+            .idx         = i,
+            .idx_end     = std::min(i + block, col_indices.size()),
+            .fetch_end   = false,
+        };
+        SCOPED_INLINE_ASYNC_FOR_END
     } else {
         ERROR("algorithm dont exist");
     }
-    // auto start = get_cycles();
+    end = get_cycles();
+    std::cout << "new index fill: " << end - start << std::endl;
+
+    start = get_cycles();
     df.load_index(std::move(new_index));
-    // auto end = get_cycles();
-    // std::cout << "load index: " << end - start << std::endl;
+    end = get_cycles();
+    std::cout << "load index: " << end - start << std::endl;
     for (auto col_citer : column_tb_) {
-        // auto start = get_cycles();
+        auto start = get_cycles();
         alg_sel_load_functor_<alg, size_type, Ts...> functor(col_citer.first.c_str(), col_indices,
                                                              idx_s, df);
         data_[col_citer.second].change(functor);
-        // auto end = get_cycles();
-        // std::cout << "change: " << end - start << std::endl;
+        auto end = get_cycles();
+        std::cout << "alg_sel_load_functor: " << end - start << std::endl;
     }
 
     return (df);

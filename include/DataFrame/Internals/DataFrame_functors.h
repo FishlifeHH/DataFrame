@@ -76,12 +76,12 @@ struct sort_functor_ : DataVec::template visitor_base<Ts...> {
 
 template <Algorithm alg, typename... Ts>
 struct sort_copy_functor_ : DataVec::template visitor_base<Ts...> {
-    inline sort_copy_functor_(const typename DataVec::WrappedVector<size_t>& si, size_t is)
+    inline sort_copy_functor_(typename DataVec::WrappedVector<size_t>& si, size_t is)
         : sorted_idxs(si), idx_s(is)
     {
     }
 
-    const typename DataVec::WrappedVector<size_t>& sorted_idxs;
+    typename DataVec::WrappedVector<size_t>& sorted_idxs;
     typename DataVec::WrappedVector<size_t> sorted_idxs_copy;
     const size_t idx_s;
 
@@ -480,19 +480,19 @@ struct sel_load_functor_ : DataVec::template visitor_base<Ts...> {
 
 template <Algorithm alg, typename IT, typename... Ts>
 struct alg_sel_load_functor_ : DataVec::template visitor_base<Ts...> {
-    inline alg_sel_load_functor_(const char* n, const FarLib::FarVector<IT>& si, size_type is,
+    inline alg_sel_load_functor_(const char* n, FarLib::FarVector<IT>& si, size_type is,
                                  DataFrame& d)
         : name(n), sel_indices(si), indices_size(is), df(d)
     {
     }
 
     const char* name;
-    const FarLib::FarVector<IT>& sel_indices;
+    FarLib::FarVector<IT>& sel_indices;
     const size_type indices_size;
     DataFrame& df;
 
     template <typename T>
-    void operator()(const FarLib::FarVector<T>& vec);
+    void operator()(FarLib::FarVector<T>& vec);
 };
 
 // ----------------------------------------------------------------------------

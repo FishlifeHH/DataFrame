@@ -29,6 +29,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // ----------------------------------------------------------------------------
 
+#include "async/scoped_inline_task.hpp"
 #include "cache/accessor.hpp"
 #include "option.hpp"
 #include "utils/parallel.hpp"
@@ -95,14 +96,14 @@ static inline void _sort_by_sorted_index_(FarLib::FarVector<T, GroupSize>& to_be
 
 template <Algorithm alg, typename T>
 static inline void _sort_by_sorted_index_copy_(FarLib::FarVector<T>& to_be_sorted,
-                                               const FarLib::FarVector<size_t>& sorting_idxs,
+                                               FarLib::FarVector<size_t>& sorting_idxs,
                                                size_t idx_s)
 {
     using namespace FarLib;
     using namespace FarLib::cache;
     FarLib::FarVector<T> result;
+    result.template resize<true>(to_be_sorted.size());
     if constexpr (alg == UTHREAD) {
-        result.template resize<true>(to_be_sorted.size());
         uthread::parallel_for_with_scope<1>(
             uthread::get_worker_count(), to_be_sorted.size(),
             [&](size_t i, DereferenceScope& scope) {
@@ -113,9 +114,7 @@ static inline void _sort_by_sorted_index_copy_(FarLib::FarVector<T>& to_be_sorte
                 const T to_be_sorted_at_idx = *(to_be_sorted.at(i, scope, __on_miss__));
                 *(result.at_mut(idx, scope, __on_miss__)) = to_be_sorted_at_idx;
             });
-        std::swap(result, to_be_sorted);
     } else if constexpr (alg == PREFETCH) {
-        result.template resize<true>(to_be_sorted.size());
         {
             struct Scope : public RootDereferenceScope {
                 decltype(sorting_idxs.clbegin()) idx_it;
@@ -155,13 +154,102 @@ static inline void _sort_by_sorted_index_copy_(FarLib::FarVector<T>& to_be_sorte
                 *(scope.result_acc) = *(scope.to_be_sorted_it);
             }
         }
-        std::swap(result, to_be_sorted);
     } else if constexpr (alg == PARAROUTINE) {
-        // TODO
-        ERROR("not implemented");
+        struct Context {
+            FarLib::FarVector<T>* to_be_sorted;
+            FarLib::FarVector<size_t>* sorting_idxs;
+            FarLib::FarVector<T>* result;
+            size_t idx;
+            size_t idx_end;
+            decltype(sorting_idxs->clbegin()) idx_it;
+            decltype(to_be_sorted->clbegin()) to_be_sorted_it;
+            decltype(result->lbegin()) result_it;
+            enum Stage { INIT, IDX_FETCHING, OTHER_FETCHING } stage;
+
+            Context(FarLib::FarVector<T>* to_be_sorted, FarLib::FarVector<T>* result,
+                    FarLib::FarVector<size_t>* sorting_idxs, size_t idx, size_t idx_end)
+                : to_be_sorted(to_be_sorted),
+                  result(result),
+                  sorting_idxs(sorting_idxs),
+                  idx(idx),
+                  idx_end(idx_end),
+                  stage(INIT)
+            {
+            }
+
+            bool fetched()
+            {
+                switch (stage) {
+                    case IDX_FETCHING:
+                        return idx_it.at_local();
+                    case OTHER_FETCHING:
+                        return to_be_sorted_it.at_local() && result_it.at_local();
+                    case INIT:
+                        return true;
+                    default:
+                        ERROR("stage not exist");
+                }
+            }
+            void pin()
+            {
+                idx_it.pin();
+                to_be_sorted_it.pin();
+                result_it.pin();
+            }
+
+            void unpin()
+            {
+                idx_it.unpin();
+                to_be_sorted_it.unpin();
+                result_it.unpin();
+            }
+
+            bool run(DereferenceScope& scope)
+            {
+                switch (stage) {
+                    case INIT:
+                        break;
+                    case IDX_FETCHING:
+                        goto idx_fetching;
+                    case OTHER_FETCHING:
+                        goto other_fetching;
+                    default:
+                        ERROR("state not exist");
+                }
+                while (idx < idx_end) {
+                    idx_it = sorting_idxs->clbegin().nextn(idx);
+                    idx_it.async_fetch(scope);
+                    to_be_sorted_it = to_be_sorted->clbegin().nextn(idx);
+                    to_be_sorted_it.async_fetch(scope);
+                    stage = IDX_FETCHING;
+                    if (!fetched()) {
+                        return false;
+                    }
+                idx_fetching:
+                    result_it = result->lbegin().nextn(*idx_it);
+                    result_it.async_fetch(scope);
+                    stage = OTHER_FETCHING;
+                    if (!fetched()) {
+                        return false;
+                    }
+                other_fetching:
+                    *result_it = *to_be_sorted_it;
+                    idx++;
+                    stage = INIT;
+                }
+                return true;
+            }
+        };
+        const size_t vec_size = to_be_sorted.size();
+        RootDereferenceScope scope;
+        const size_t block = (vec_size + async::DEFAULT_BATCH_SIZE - 1) / async::DEFAULT_BATCH_SIZE;
+        SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < vec_size, i += block, scope)
+        return Context(&to_be_sorted, &result, &sorting_idxs, i, std::min(i + block, vec_size));
+        SCOPED_INLINE_ASYNC_FOR_END
     } else {
         ERROR("algorithm dont exist");
     }
+    std::swap(result, to_be_sorted);
 }
 
 // ----------------------------------------------------------------------------
