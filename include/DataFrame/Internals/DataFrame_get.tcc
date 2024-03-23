@@ -40,6 +40,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "option.hpp"
 #include "utils/debug.hpp"
 #include "utils/parallel.hpp"
+#include "utils/perf.hpp"
 // ----------------------------------------------------------------------------
 
 namespace hmdf
@@ -270,8 +271,7 @@ FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values(const char* name) co
         };
         bool counted_nan = false;
         RootDereferenceScope scope;
-        const size_t block =
-            (vec.size() + async::DEFAULT_BATCH_SIZE - 1) / async::DEFAULT_BATCH_SIZE;
+        const size_t block = (vec.size() + CTX_COUNT - 1) / CTX_COUNT;
         SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < vec.size(), i += block, scope)
         return Context{
             .vec       = &vec,
@@ -477,12 +477,11 @@ V& DataFrame<I, H>::visit(const char* name, V& visitor)
             }
         };
         RootDereferenceScope scope;
-        const size_t block1 = (min_s + async::DEFAULT_BATCH_SIZE - 1) / async::DEFAULT_BATCH_SIZE;
+        const size_t block1 = (min_s + CTX_COUNT - 1) / CTX_COUNT;
         SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < min_s, i += block1, scope)
         return Context(&indices_, &visitor, i, std::min(i + block1, min_s), &vec);
         SCOPED_INLINE_ASYNC_FOR_END
-        const size_t block2 =
-            (idx_s - min_s + async::DEFAULT_BATCH_SIZE - 1) / async::DEFAULT_BATCH_SIZE;
+        const size_t block2 = (idx_s - min_s + CTX_COUNT - 1) / CTX_COUNT;
         SCOPED_INLINE_ASYNC_FOR(CommonContext, size_t, i, min_s, i < idx_s, i += block2, scope)
         return CommonContext(&indices_, &visitor, i, std::min(i + block2, idx_s));
         SCOPED_INLINE_ASYNC_FOR_END
@@ -1130,249 +1129,141 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
     FarLib::FarVector<size_type> col_indices;
     col_indices.reserve(idx_s / 2);
     auto start = get_cycles();
-
-    if constexpr (alg == DEFAULT) {
-        for (size_type i = 0; i < col_s; ++i)
-            if (sel_functor(*indices_[i], *vec[i])) col_indices.push_back(i);
-    } else if constexpr (alg == UTHREAD) {
-        // only available if index = [0...idx_s - 1]
-        std::vector<std::vector<size_type>> uthread_col_indices(uthread::get_worker_count() *
-                                                                UTH_FACTOR);
-        for (auto& v : uthread_col_indices) {
-            v.reserve(idx_s / (uthread::get_worker_count() * UTH_FACTOR));
-        }
-        const size_t block =
-            (idx_s + uthread::get_worker_count() - 1) / uthread::get_worker_count();
-        uthread::parallel_for_with_scope<1>(
-            uthread::get_worker_count() * UTH_FACTOR, uthread::get_worker_count() * UTH_FACTOR,
-            [&](size_t i, DereferenceScope& scope) {
-                size_t lim = std::min((i + 1) * block, idx_s);
-                ON_MISS_BEGIN
-                uthread::yield();
-                ON_MISS_END
-                for (size_t index = i * block; index < lim; index++) {
-                    T elem = *(vec.at(index, scope, __on_miss__));
-                    if (sel_functor(index, elem)) {
-                        uthread_col_indices[i].push_back(index);
-                    }
-                }
-            });
-        {
-            RootDereferenceScope scope;
+    perf_profile([&]() {
+        if constexpr (alg == DEFAULT) {
+            for (size_type i = 0; i < col_s; ++i)
+                if (sel_functor(*indices_[i], *vec[i])) col_indices.push_back(i);
+        } else if constexpr (alg == UTHREAD) {
+            // only available if index = [0...idx_s - 1]
+            std::vector<std::vector<size_type>> uthread_col_indices(uthread::get_worker_count() *
+                                                                    UTH_FACTOR);
             for (auto& v : uthread_col_indices) {
-                for (auto& idx : v) {
-                    col_indices.push_back(idx, scope);
-                }
+                v.reserve(idx_s / (uthread::get_worker_count() * UTH_FACTOR));
             }
-        }
-    } else if constexpr (alg == PREFETCH) {
-        // only available if index = [0...idx_s - 1]
-        RootDereferenceScope scope;
-        auto vec_it = vec.clbegin(scope);
-        for (size_t i = 0; i < idx_s; i++, vec_it.next(scope)) {
-            if (sel_functor(i, *(vec_it))) {
-                col_indices.push_back(i, scope);
-            }
-        }
-    } else if constexpr (alg == PARAROUTINE) {
-        using vec_t         = std::remove_reference_t<decltype(vec)>;
-        using sel_functor_t = std::remove_reference_t<decltype(sel_functor)>;
-        using col_indices_t = std::remove_reference_t<decltype(col_indices)>;
-
-        struct Context {
-            vec_t* vec;
-            sel_functor_t* sel;
-            col_indices_t* col_indices;
-            decltype(vec->clbegin()) vec_it;
-            size_t idx;
-            size_t idx_end;
-            bool fetch_end;
-
-            void pin()
-            {
-                vec_it.pin();
-            }
-
-            void unpin()
-            {
-                vec_it.unpin();
-            }
-
-            bool fetched()
-            {
-                return vec_it.at_local();
-            }
-
-            bool run(DereferenceScope& scope)
-            {
-                if (fetch_end) {
-                    goto next;
-                }
-                while (idx < idx_end) {
-                    vec_it    = vec->clbegin().nextn(idx);
-                    fetch_end = true;
-                    if (!vec_it.async_fetch(scope)) {
-                        return false;
+            const size_t block =
+                (idx_s + uthread::get_worker_count() - 1) / uthread::get_worker_count();
+            uthread::parallel_for_with_scope<1>(
+                uthread::get_worker_count() * UTH_FACTOR, uthread::get_worker_count() * UTH_FACTOR,
+                [&](size_t i, DereferenceScope& scope) {
+                    size_t lim = std::min((i + 1) * block, idx_s);
+                    ON_MISS_BEGIN
+                    uthread::yield();
+                    ON_MISS_END
+                    for (size_t index = i * block; index < lim; index++) {
+                        T elem = *(vec.at(index, scope, __on_miss__));
+                        if (sel_functor(index, elem)) {
+                            uthread_col_indices[i].push_back(index);
+                        }
                     }
-                next:
-                    if ((*sel)(idx, *vec_it)) {
-                        col_indices->push_back(idx, scope);
+                });
+            {
+                RootDereferenceScope scope;
+                for (auto& v : uthread_col_indices) {
+                    for (auto& idx : v) {
+                        col_indices.push_back(idx, scope);
                     }
-                    idx++;
-                    fetch_end = false;
                 }
-                return true;
             }
-        };
-        RootDereferenceScope scope;
-        const size_t block = (idx_s + async::DEFAULT_BATCH_SIZE - 1) / async::DEFAULT_BATCH_SIZE;
-        SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < idx_s, i += block, scope)
-        return Context{
-            .vec         = &vec,
-            .sel         = &sel_functor,
-            .col_indices = &col_indices,
-            .idx         = i,
-            .idx_end     = std::min(i + block, idx_s),
-            .fetch_end   = false,
-        };
-        SCOPED_INLINE_ASYNC_FOR_END
-    } else {
-        ERROR("algorithm dont exist");
-    }
+        } else if constexpr (alg == PREFETCH) {
+            // only available if index = [0...idx_s - 1]
+            RootDereferenceScope scope;
+            auto vec_it = vec.clbegin(scope);
+            for (size_t i = 0; i < idx_s; i++, vec_it.next(scope)) {
+                if (sel_functor(i, *(vec_it))) {
+                    col_indices.push_back(i, scope);
+                }
+            }
+        } else if constexpr (alg == PARAROUTINE) {
+            using vec_t         = std::remove_reference_t<decltype(vec)>;
+            using sel_functor_t = std::remove_reference_t<decltype(sel_functor)>;
+            using col_indices_t = std::remove_reference_t<decltype(col_indices)>;
+
+            struct Context {
+                vec_t* vec;
+                sel_functor_t* sel;
+                col_indices_t* col_indices;
+                decltype(vec->clbegin()) vec_it;
+                size_t idx;
+                size_t idx_end;
+                bool fetch_end;
+
+                void pin()
+                {
+                    vec_it.pin();
+                }
+
+                void unpin()
+                {
+                    vec_it.unpin();
+                }
+
+                bool fetched()
+                {
+                    return vec_it.at_local();
+                }
+
+                bool run(DereferenceScope& scope)
+                {
+                    if (fetch_end) {
+                        goto next;
+                    }
+                    while (idx < idx_end) {
+                        vec_it    = vec->clbegin().nextn(idx);
+                        fetch_end = true;
+                        if (!vec_it.async_fetch(scope)) {
+                            return false;
+                        }
+                    next:
+                        if ((*sel)(idx, *vec_it)) {
+                            col_indices->push_back(idx, scope);
+                        }
+                        idx++;
+                        fetch_end = false;
+                    }
+                    return true;
+                }
+            };
+            RootDereferenceScope scope;
+            const size_t block = (idx_s + CTX_COUNT - 1) / CTX_COUNT;
+            SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < idx_s, i += block, scope)
+            return Context{
+                .vec         = &vec,
+                .sel         = &sel_functor,
+                .col_indices = &col_indices,
+                .idx         = i,
+                .idx_end     = std::min(i + block, idx_s),
+                .fetch_end   = false,
+            };
+            SCOPED_INLINE_ASYNC_FOR_END
+        } else {
+            ERROR("algorithm dont exist");
+        }
+    }).print();
     auto end = get_cycles();
-    std::cout << "col indices get: " << end - start << std::endl;
+    std::cout << "col indices get: " << end - start << std::endl << std::endl;
 
     DataFrame df;
+    start = get_cycles();
     IndexVecType new_index;
+    perf_profile([&]() {
+        new_index = indices_.template copy_data_by_idx<alg>(col_indices);
+    }).print();
+    end = get_cycles();
+    std::cout << "new index fill: " << end - start << std::endl << std::endl;
 
     start = get_cycles();
-    new_index.template resize<true>(col_indices.size());
-    if constexpr (alg == DEFAULT) {
-        for (size_t i = 0; i < col_indices.size(); i++) {
-            *(new_index[i]) = *indices_[col_indices[i]];
-        }
-    } else if constexpr (alg == UTHREAD) {
-        // only available if index = [0...idx_s - 1]
-        uthread::parallel_for_with_scope<1>(uthread::get_worker_count() * UTH_FACTOR,
-                                            col_indices.size(),
-                                            [&](size_t i, DereferenceScope& scope) {
-                                                ON_MISS_BEGIN
-                                                uthread::yield();
-                                                ON_MISS_END
-                                                *(new_index.at_mut(i, scope, __on_miss__)) =
-                                                    *(col_indices.at(i, scope, __on_miss__));
-                                                ;
-                                            });
-    } else if constexpr (alg == PREFETCH) {
-        struct Scope : public RootDereferenceScope {
-            decltype(new_index.lbegin()) new_index_it;
-            decltype(col_indices.clbegin()) col_indices_it;
-            void pin() const override
-            {
-                col_indices_it.pin();
-                new_index_it.pin();
-            }
-
-            void unpin() const override
-            {
-                col_indices_it.unpin();
-                new_index_it.unpin();
-            }
-
-            void next()
-            {
-                new_index_it.next(*this);
-                col_indices_it.next(*this);
-            }
-        } scope;
-        scope.new_index_it   = new_index.lbegin(scope);
-        scope.col_indices_it = col_indices.clbegin(scope);
-        for (size_t i = 0; i < col_indices.size(); i++, scope.next()) {
-            ON_MISS_BEGIN
-            ON_MISS_END
-            *(scope.new_index_it) = *(scope.col_indices_it);
-        }
-    } else if constexpr (alg == PARAROUTINE) {
-        using new_index_t   = std::remove_reference_t<decltype(new_index)>;
-        using col_indices_t = std::remove_reference_t<decltype(col_indices)>;
-
-        struct Context {
-            new_index_t* new_index;
-            col_indices_t* col_indices;
-            decltype(new_index->lbegin()) new_index_it;
-            decltype(col_indices->clbegin()) col_indices_it;
-            size_t idx;
-            size_t idx_end;
-            bool fetch_end;
-
-            void pin()
-            {
-                new_index_it.pin();
-                col_indices_it.pin();
-            }
-
-            void unpin()
-            {
-                new_index_it.unpin();
-                col_indices_it.unpin();
-            }
-
-            bool fetched()
-            {
-                return new_index_it.at_local() && col_indices_it.at_local();
-            }
-
-            bool run(DereferenceScope& scope)
-            {
-                if (fetch_end) {
-                    goto next;
-                }
-                while (idx < idx_end) {
-                    new_index_it = new_index->lbegin().nextn(idx);
-                    new_index_it.async_fetch(scope);
-                    col_indices_it = col_indices->clbegin().nextn(idx);
-                    col_indices_it.async_fetch(scope);
-                    fetch_end = true;
-                    if (!fetched()) {
-                        return false;
-                    }
-                next:
-                    *new_index_it = *col_indices_it;
-                    idx++;
-                    fetch_end = false;
-                }
-                return true;
-            }
-        };
-        RootDereferenceScope scope;
-        const size_t block =
-            (col_indices.size() + async::DEFAULT_BATCH_SIZE - 1) / async::DEFAULT_BATCH_SIZE;
-        SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < col_indices.size(), i += block, scope)
-        return Context{
-            .new_index   = &new_index,
-            .col_indices = &col_indices,
-            .idx         = i,
-            .idx_end     = std::min(i + block, col_indices.size()),
-            .fetch_end   = false,
-        };
-        SCOPED_INLINE_ASYNC_FOR_END
-    } else {
-        ERROR("algorithm dont exist");
-    }
+    perf_profile([&]() { df.load_index(std::move(new_index)); }).print();
     end = get_cycles();
-    std::cout << "new index fill: " << end - start << std::endl;
-
-    start = get_cycles();
-    df.load_index(std::move(new_index));
-    end = get_cycles();
-    std::cout << "load index: " << end - start << std::endl;
+    std::cout << "load index: " << end - start << std::endl << std::endl;
     for (auto col_citer : column_tb_) {
         auto start = get_cycles();
-        alg_sel_load_functor_<alg, size_type, Ts...> functor(col_citer.first.c_str(), col_indices,
-                                                             idx_s, df);
-        data_[col_citer.second].change(functor);
+        perf_profile([&]() {
+            alg_sel_load_functor_<alg, size_type, Ts...> functor(col_citer.first.c_str(),
+                                                                 col_indices, idx_s, df);
+            data_[col_citer.second].change(functor);
+        }).print();
         auto end = get_cycles();
-        std::cout << "alg_sel_load_functor: " << end - start << std::endl;
+        std::cout << "alg_sel_load_functor: " << end - start << std::endl << std::endl;
     }
 
     return (df);

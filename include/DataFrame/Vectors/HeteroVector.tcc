@@ -193,8 +193,7 @@ void HeteroVector::visit_impl_help_(T& visitor)
             };
             RootDereferenceScope scope;
             const size_t vec_size = iter->second.size();
-            const size_t block =
-                (vec_size + async::DEFAULT_BATCH_SIZE - 1) / async::DEFAULT_BATCH_SIZE;
+            const size_t block    = (vec_size + CTX_COUNT - 1) / CTX_COUNT;
             SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < vec_size, i += block, scope)
             return Context{
                 .vec       = &(iter->second),
@@ -286,8 +285,7 @@ void HeteroVector::visit_impl_help_(T& visitor) const
             };
             RootDereferenceScope scope;
             const size_t vec_size = citer->second.size();
-            const size_t block =
-                (vec_size + async::DEFAULT_BATCH_SIZE - 1) / async::DEFAULT_BATCH_SIZE;
+            const size_t block    = (vec_size + CTX_COUNT - 1) / CTX_COUNT;
             SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < vec_size, i += block, scope)
             return Context{
                 .vec       = &(citer->second),

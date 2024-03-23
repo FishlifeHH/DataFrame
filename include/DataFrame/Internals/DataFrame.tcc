@@ -253,8 +253,7 @@ void DataFrame<I, H>::sort_common_(DataFrame<I, H>& df, FarLib::FarVector<T>& ve
             };
             RootDereferenceScope scope;
             const size_t vec_size = vec.size();
-            const int64_t block =
-                (vec_size + async::DEFAULT_BATCH_SIZE - 1) / async::DEFAULT_BATCH_SIZE;
+            const int64_t block   = (vec_size + CTX_COUNT - 1) / CTX_COUNT;
             SCOPED_INLINE_ASYNC_FOR(Context, int64_t, i, vec_size - 1, i >= 0, i -= block, scope)
             return Context{
                 .vec      = &vec,

@@ -242,7 +242,7 @@ static inline void _sort_by_sorted_index_copy_(FarLib::FarVector<T>& to_be_sorte
         };
         const size_t vec_size = to_be_sorted.size();
         RootDereferenceScope scope;
-        const size_t block = (vec_size + async::DEFAULT_BATCH_SIZE - 1) / async::DEFAULT_BATCH_SIZE;
+        const size_t block = (vec_size + CTX_COUNT - 1) / CTX_COUNT;
         SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < vec_size, i += block, scope)
         return Context(&to_be_sorted, &result, &sorting_idxs, i, std::min(i + block, vec_size));
         SCOPED_INLINE_ASYNC_FOR_END

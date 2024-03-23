@@ -17,6 +17,7 @@
 #include "utils/control.hpp"
 #include "utils/debug.hpp"
 #include "utils/parallel.hpp"
+#include "utils/perf.hpp"
 // #define STANDALONE
 // simple: ~74M, full: ~16G
 // #define SIMPLE_BENCH
@@ -89,9 +90,13 @@ void print_passage_counts_by_vendor_id(StdDataFrame<uint64_t>& df, int vendor_id
         return vid == vendor_id;
     };
     auto start = get_cycles();
-    auto sel_df =
+    decltype(df.get_data_by_sel<alg, int, decltype(sel_vendor_functor), int, SimpleTime, double,
+                                char>("VendorID", sel_vendor_functor)) sel_df;
+    // perf_profile([&]() {
+    sel_df =
         df.get_data_by_sel<alg, int, decltype(sel_vendor_functor), int, SimpleTime, double, char>(
             "VendorID", sel_vendor_functor);
+    // }).print();
     auto end = get_cycles();
     std::cout << "sel df get: " << end - start << std::endl;
     auto& passage_count_vec = sel_df.template get_column<int>("passenger_count");
@@ -172,7 +177,7 @@ void print_passage_counts_by_vendor_id(StdDataFrame<uint64_t>& df, int vendor_id
         };
         RootDereferenceScope scope;
         const size_t vec_size = passage_count_vec.size();
-        const size_t block = (vec_size + async::DEFAULT_BATCH_SIZE - 1) / async::DEFAULT_BATCH_SIZE;
+        const size_t block    = (vec_size + CTX_COUNT - 1) / CTX_COUNT;
         SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < vec_size, i += block, scope)
         return Context(&passage_count_vec, &passage_count_map, i, std::min(i + block, vec_size));
         SCOPED_INLINE_ASYNC_FOR_END
@@ -320,8 +325,7 @@ void calculate_trip_duration(StdDataFrame<uint64_t>& df)
             }
         };
         RootDereferenceScope scope;
-        const size_t block =
-            (pickup_time_vec.size() + async::DEFAULT_BATCH_SIZE - 1) / async::DEFAULT_BATCH_SIZE;
+        const size_t block = (pickup_time_vec.size() + CTX_COUNT - 1) / CTX_COUNT;
         SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < pickup_time_vec.size(), i += block,
                                 scope)
         return Context(&pickup_time_vec, &dropoff_time_vec, &duration_vec, i,
@@ -454,7 +458,7 @@ void calculate_distribution_store_and_fwd_flag(StdDataFrame<uint64_t>& df)
         };
         RootDereferenceScope scope;
         const size_t vec_size = unique_vendor_id_vec.size();
-        const size_t block = (vec_size + async::DEFAULT_BATCH_SIZE - 1) / async::DEFAULT_BATCH_SIZE;
+        const size_t block    = (vec_size + CTX_COUNT - 1) / CTX_COUNT;
         SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < vec_size, i += block, scope)
         return Context(&unique_vendor_id_vec, i, std::min(i + block, vec_size));
         SCOPED_INLINE_ASYNC_FOR_END
@@ -655,8 +659,7 @@ void calculate_haversine_distance_column(StdDataFrame<uint64_t>& df)
             }
         };
         RootDereferenceScope scope;
-        const size_t block = (pickup_longitude_vec.size() + async::DEFAULT_BATCH_SIZE - 1) /
-                             async::DEFAULT_BATCH_SIZE;
+        const size_t block = (pickup_longitude_vec.size() + CTX_COUNT - 1) / CTX_COUNT;
         SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < pickup_longitude_vec.size(), i += block,
                                 scope)
         return Context(&pickup_latitude_vec, &pickup_longitude_vec, &dropoff_latitude_vec,
@@ -882,8 +885,7 @@ void analyze_trip_timestamp(StdDataFrame<uint64_t>& df)
                 }
             };
             RootDereferenceScope scope;
-            const size_t block = (pickup_time_vec.size() + async::DEFAULT_BATCH_SIZE - 1) /
-                                 async::DEFAULT_BATCH_SIZE;
+            const size_t block = (pickup_time_vec.size() + CTX_COUNT - 1) / CTX_COUNT;
             SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < pickup_time_vec.size(), i += block,
                                     scope)
             return Context{
@@ -1052,8 +1054,7 @@ void analyze_trip_durations_of_timestamps(StdDataFrame<uint64_t>& df, const char
             }
         };
         RootDereferenceScope scope;
-        const size_t block =
-            (key_vec.size() + async::DEFAULT_BATCH_SIZE - 1) / async::DEFAULT_BATCH_SIZE;
+        const size_t block = (key_vec.size() + CTX_COUNT - 1) / CTX_COUNT;
         SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < key_vec.size(), i += block, scope)
         return Context{
             .key_vec      = &key_vec,
@@ -1108,26 +1109,30 @@ int main(int argc, const char* argv[])
     /* test */
     std::chrono::time_point<std::chrono::steady_clock> times[10];
     {
+        FarLib::Cache::init_profile();
+        perf_init();
         auto df  = load_data();
         times[0] = std::chrono::steady_clock::now();
         print_number_vendor_ids_and_unique(df);
+        FarLib::Cache::start_profile();
         times[1] = std::chrono::steady_clock::now();
         print_passage_counts_by_vendor_id(df, 1);
         times[2] = std::chrono::steady_clock::now();
-        print_passage_counts_by_vendor_id(df, 2);
-        times[3] = std::chrono::steady_clock::now();
-        calculate_trip_duration(df);
-        times[4] = std::chrono::steady_clock::now();
-        calculate_distribution_store_and_fwd_flag(df);
-        times[5] = std::chrono::steady_clock::now();
-        calculate_haversine_distance_column(df);
-        times[6] = std::chrono::steady_clock::now();
-        analyze_trip_timestamp(df);
-        times[7] = std::chrono::steady_clock::now();
-        analyze_trip_durations_of_timestamps<char>(df, "pickup_day");
-        times[8] = std::chrono::steady_clock::now();
-        analyze_trip_durations_of_timestamps<char>(df, "pickup_month");
-        times[9] = std::chrono::steady_clock::now();
+        FarLib::Cache::end_profile();
+        // print_passage_counts_by_vendor_id(df, 2);
+        // times[3] = std::chrono::steady_clock::now();
+        // calculate_trip_duration(df);
+        // times[4] = std::chrono::steady_clock::now();
+        // calculate_distribution_store_and_fwd_flag(df);
+        // times[5] = std::chrono::steady_clock::now();
+        // calculate_haversine_distance_column(df);
+        // times[6] = std::chrono::steady_clock::now();
+        // analyze_trip_timestamp(df);
+        // times[7] = std::chrono::steady_clock::now();
+        // analyze_trip_durations_of_timestamps<char>(df, "pickup_day");
+        // times[8] = std::chrono::steady_clock::now();
+        // analyze_trip_durations_of_timestamps<char>(df, "pickup_month");
+        // times[9] = std::chrono::steady_clock::now();
 
         for (uint32_t i = 1; i < std::size(times); i++) {
             std::cout << "Step " << i << ": "
@@ -1142,6 +1147,11 @@ int main(int argc, const char* argv[])
             << " us" << std::endl;
     }
     /* destroy runtime */
+    std::cout << "handle time: " << (static_cast<double>(FarLib::Cache::handle_time) / 2.8 / 1000)
+              << "us" << std::endl;
+    std::cout << "evict time: " << (static_cast<double>(FarLib::Cache::evict_time) / 2.8 / 1000)
+              << "us" << std::endl;
+
     FarLib::runtime_destroy();
 #ifdef STANDALONE
     server_thread.join();

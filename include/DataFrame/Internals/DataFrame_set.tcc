@@ -502,8 +502,7 @@ typename DataFrame<I, H>::size_type DataFrame<I, H>::load_column(
             };
             data.resize(idx_s);
             RootDereferenceScope scope;
-            const size_t block =
-                (idx_s - data_s + async::DEFAULT_BATCH_SIZE - 1) / async::DEFAULT_BATCH_SIZE;
+            const size_t block = (idx_s - data_s + CTX_COUNT - 1) / CTX_COUNT;
             SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < idx_s - data_s, i += block, scope)
             return Context{
                 .data      = &data,
