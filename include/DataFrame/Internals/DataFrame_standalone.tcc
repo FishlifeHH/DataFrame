@@ -192,98 +192,76 @@ static inline void _sort_by_sorted_index_copy_(FarLib::FarVector<T>& to_be_sorte
             }
         }
     } else if constexpr (alg == PARAROUTINE) {
-        // TODO
-        WARN("deprecated");
+        using result_vec_t = std::remove_reference_t<decltype(result)>;
+        using result_it_t  = decltype(result.lbegin());
         struct Context {
-            FarLib::FarVector<T>* to_be_sorted;
-            FarLib::FarVector<size_t>* sorting_idxs;
-            FarLib::FarVector<T>* result;
             size_t idx;
-            size_t idx_end;
-            decltype(sorting_idxs->clbegin()) idx_it;
-            decltype(to_be_sorted->clbegin()) to_be_sorted_it;
-            decltype(result->lbegin()) result_it;
-            enum Stage { INIT, IDX_FETCHING, OTHER_FETCHING } stage;
-
-            Context(FarLib::FarVector<T>* to_be_sorted, FarLib::FarVector<T>* result,
-                    FarLib::FarVector<size_t>* sorting_idxs, size_t idx, size_t idx_end)
-                : to_be_sorted(to_be_sorted),
-                  result(result),
-                  sorting_idxs(sorting_idxs),
-                  idx(idx),
-                  idx_end(idx_end),
-                  stage(INIT)
-            {
-            }
+            T to_be_sorted_elem;
+            result_vec_t* result;
+            result_it_t result_it;
+            bool fetch_end;
 
             bool fetched()
             {
-                switch (stage) {
-                    case IDX_FETCHING:
-                        return idx_it.at_local();
-                    case OTHER_FETCHING:
-                        return to_be_sorted_it.at_local() && result_it.at_local();
-                    case INIT:
-                        return true;
-                    default:
-                        ERROR("stage not exist");
-                }
+                return result_it.at_local();
             }
             void pin()
             {
-                idx_it.pin();
-                to_be_sorted_it.pin();
                 result_it.pin();
             }
 
             void unpin()
             {
-                idx_it.unpin();
-                to_be_sorted_it.unpin();
                 result_it.unpin();
             }
 
             bool run(DereferenceScope& scope)
             {
-                switch (stage) {
-                    case INIT:
-                        break;
-                    case IDX_FETCHING:
-                        goto idx_fetching;
-                    case OTHER_FETCHING:
-                        goto other_fetching;
-                    default:
-                        ERROR("state not exist");
+                if (fetch_end) {
+                    goto next;
                 }
-                while (idx < idx_end) {
-                    idx_it = sorting_idxs->clbegin().nextn(idx);
-                    idx_it.async_fetch(scope);
-                    to_be_sorted_it = to_be_sorted->clbegin().nextn(idx);
-                    to_be_sorted_it.async_fetch(scope);
-                    stage = IDX_FETCHING;
-                    if (!fetched()) {
-                        return false;
-                    }
-                idx_fetching:
-                    result_it = result->lbegin().nextn(*idx_it);
-                    result_it.async_fetch(scope);
-                    stage = OTHER_FETCHING;
-                    if (!fetched()) {
-                        return false;
-                    }
-                other_fetching:
-                    *result_it = *to_be_sorted_it;
-                    idx++;
-                    stage = INIT;
+                result_it = result->get_lite_iter(idx);
+                result_it.async_fetch(scope);
+                fetch_end = true;
+                if (!fetched()) {
+                    return false;
                 }
+            next:
+                *result_it = to_be_sorted_elem;
                 return true;
             }
         };
         const size_t vec_size = to_be_sorted.size();
-        RootDereferenceScope scope;
-        const size_t block = (vec_size + CTX_COUNT - 1) / CTX_COUNT;
-        SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < vec_size, i += block, scope)
-        return Context(&to_be_sorted, &result, &sorting_idxs, i, std::min(i + block, vec_size));
+        using idx_it_t        = decltype(sorting_idxs.clbegin());
+        using elem_it_t       = decltype(to_be_sorted.clbegin());
+        struct Scope : public RootDereferenceScope {
+            idx_it_t idx_it;
+            elem_it_t elem_it;
+
+            void pin() const override
+            {
+                idx_it.pin();
+                elem_it.pin();
+            }
+
+            void unpin() const override
+            {
+                idx_it.unpin();
+                elem_it.unpin();
+            }
+        } root_scope;
+        root_scope.idx_it  = sorting_idxs.clbegin(root_scope);
+        root_scope.elem_it = to_be_sorted.clbegin(root_scope);
+        SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < vec_size, i++, root_scope)
+        Context ctx{
+            .idx               = *(root_scope.idx_it),
+            .to_be_sorted_elem = *(root_scope.elem_it),
+            .result            = &result,
+            .fetch_end         = false,
+        };
+        root_scope.idx_it.next(scope);
+        root_scope.elem_it.next(scope);
+        return ctx;
         SCOPED_INLINE_ASYNC_FOR_END
     } else {
         ERROR("algorithm dont exist");
