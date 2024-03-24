@@ -160,71 +160,13 @@ void HeteroVector::visit_impl_help_(T& visitor)
                         visitor(*(scp.it));
                     }
                 });
-        } else if constexpr (alg == PREFETCH) {
+        } else if constexpr (alg == PREFETCH || alg == PARAROUTINE) {
             RootDereferenceScope scope;
             size_t vec_size = iter->second.size();
             auto it         = iter->second.clbegin(scope);
             for (size_t i = 0; i < vec_size; i++, it.next(scope)) {
                 visitor(*it);
             }
-        } else if constexpr (alg == PARAROUTINE) {
-            WARN("deprecateed");
-            using vec_t     = std::remove_reference_t<decltype(iter->second)>;
-            using visitor_t = std::remove_reference_t<decltype(visitor)>;
-            struct Context {
-                vec_t* vec;
-                visitor_t* visit;
-                decltype(vec->clbegin()) it;
-                size_t idx;
-                size_t idx_end;
-                bool fetch_end;
-
-                void pin()
-                {
-                    it.pin();
-                }
-
-                void unpin()
-                {
-                    it.unpin();
-                }
-
-                bool fetched()
-                {
-                    return it.at_local();
-                }
-
-                bool run(DereferenceScope& scope)
-                {
-                    if (fetch_end) {
-                        goto next;
-                    }
-                    while (idx < idx_end) {
-                        it        = vec->clbegin().nextn(idx);
-                        fetch_end = true;
-                        if (!it.async_fetch(scope)) {
-                            return false;
-                        }
-                    next:
-                        (*visit)(*it);
-                        idx++;
-                        fetch_end = false;
-                    }
-                    return true;
-                }
-            };
-            RootDereferenceScope scope;
-            const size_t vec_size = iter->second.size();
-            const size_t block    = (vec_size + CTX_COUNT - 1) / CTX_COUNT;
-            SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < vec_size, i += block, scope)
-            return Context{
-                .vec       = &(iter->second),
-                .visit     = &visitor,
-                .idx       = i,
-                .idx_end   = std::min(i + block, vec_size),
-                .fetch_end = false,
-            };
-            SCOPED_INLINE_ASYNC_FOR_END
         } else {
             ERROR("alg dont exist");
         }
@@ -274,70 +216,13 @@ void HeteroVector::visit_impl_help_(T& visitor) const
                         visitor(*(scp.it));
                     }
                 });
-        } else if constexpr (alg == PREFETCH) {
+        } else if constexpr (alg == PREFETCH || alg == PARAROUTINE) {
             RootDereferenceScope scope;
             size_t vec_size = citer->second.size();
             auto it         = citer->second.clbegin(scope);
             for (size_t i = 0; i < vec_size; i++, it.next(scope)) {
                 visitor(*it);
             }
-        } else if constexpr (alg == PARAROUTINE) {
-            using vec_t     = std::remove_reference_t<decltype(citer->second)>;
-            using visitor_t = std::remove_reference_t<decltype(visitor)>;
-            struct Context {
-                vec_t* vec;
-                visitor_t* visit;
-                decltype(vec->clbegin()) it;
-                size_t idx;
-                size_t idx_end;
-                bool fetch_end;
-
-                void pin()
-                {
-                    it.pin();
-                }
-
-                void unpin()
-                {
-                    it.unpin();
-                }
-
-                bool fetched()
-                {
-                    return it.at_local();
-                }
-
-                bool run(DereferenceScope& scope)
-                {
-                    if (fetch_end) {
-                        goto next;
-                    }
-                    while (idx < idx_end) {
-                        it        = vec->clbegin().nextn(idx);
-                        fetch_end = true;
-                        if (!it.async_fetch(scope)) {
-                            return false;
-                        }
-                    next:
-                        (*visit)(*it);
-                        idx++;
-                        fetch_end = false;
-                    }
-                    return true;
-                }
-            };
-            RootDereferenceScope scope;
-            const size_t vec_size = citer->second.size();
-            const size_t block    = (vec_size + CTX_COUNT - 1) / CTX_COUNT;
-            SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < vec_size, i += block, scope)
-            return Context{
-                .vec       = &(citer->second),
-                .visit     = &visitor,
-                .idx       = i,
-                .idx_end   = std::min(i + block, vec_size),
-                .fetch_end = false,
-            };
-            SCOPED_INLINE_ASYNC_FOR_END
         } else {
             ERROR("alg dont exist");
         }

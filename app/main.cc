@@ -138,72 +138,13 @@ void print_passage_counts_by_vendor_id(StdDataFrame<uint64_t>& df, int vendor_id
                     passage_count_map[*(scp.it)]++;
                 }
             });
-    } else if constexpr (alg == PREFETCH) {
+    } else if constexpr (alg == PREFETCH || alg == PARAROUTINE) {
         RootDereferenceScope scope;
         auto it         = passage_count_vec.clbegin(scope);
         size_t vec_size = passage_count_vec.size();
         for (size_t i = 0; i < vec_size; i++, it.next(scope)) {
             passage_count_map[*it]++;
         }
-    } else if constexpr (alg == PARAROUTINE) {
-        WARN("deprecated");
-        struct Context {
-            FarLib::FarVector<int>* passage_count_vec;
-            std::map<int, int>* passage_count_map;
-            size_t idx;
-            size_t idx_end;
-            decltype(passage_count_vec->clbegin()) it;
-            bool fetch_end;
-            Context(FarLib::FarVector<int>* passage_count_vec,
-                    std::map<int, int>* passage_count_map, size_t idx, size_t idx_end)
-                : passage_count_vec(passage_count_vec),
-                  passage_count_map(passage_count_map),
-                  idx(idx),
-                  idx_end(idx_end),
-                  fetch_end(false)
-            {
-            }
-
-            void pin()
-            {
-                it.pin();
-            }
-
-            void unpin()
-            {
-                it.unpin();
-            }
-
-            bool fetched()
-            {
-                return it.at_local();
-            }
-
-            bool run(DereferenceScope& scope)
-            {
-                if (fetch_end) {
-                    goto next;
-                }
-                while (idx < idx_end) {
-                    it        = passage_count_vec->clbegin().nextn(idx);
-                    fetch_end = true;
-                    if (!it.async_fetch(scope)) {
-                        return false;
-                    }
-                next:
-                    (*passage_count_map)[*it]++;
-                    idx++;
-                    fetch_end = false;
-                }
-                return true;
-            }
-        };
-        RootDereferenceScope scope;
-        const size_t vec_size = passage_count_vec.size();
-        const size_t block    = (vec_size + CTX_COUNT - 1) / CTX_COUNT;
-        SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < vec_size, i += block, scope)
-        return Context(&passage_count_vec, &passage_count_map, i, std::min(i + block, vec_size));
-        SCOPED_INLINE_ASYNC_FOR_END
     } else {
         ERROR("alg dont exist");
     }
@@ -282,7 +223,7 @@ void calculate_trip_duration(StdDataFrame<uint64_t>& df)
                         scp.dropoff_time_it->to_second() - scp.pickup_time_it->to_second();
                 }
             });
-    } else if constexpr (alg == PREFETCH) {
+    } else if constexpr (alg == PREFETCH || alg == PARAROUTINE) {
         struct Scope : public RootDereferenceScope {
             decltype(pickup_time_vec.clbegin()) pickup_time_it;
             decltype(dropoff_time_vec.clbegin()) dropoff_time_it;
@@ -314,84 +255,6 @@ void calculate_trip_duration(StdDataFrame<uint64_t>& df)
             *(scope.duration_it) =
                 (scope.dropoff_time_it)->to_second() - (scope.pickup_time_it)->to_second();
         }
-    } else if constexpr (alg == PARAROUTINE) {
-        WARN("deprecated");
-        using pickup_time_vec_t  = std::remove_reference_t<decltype(pickup_time_vec)>;
-        using dropoff_time_vec_t = std::remove_reference_t<decltype(dropoff_time_vec)>;
-        using duration_vec_t     = std::remove_reference_t<decltype(duration_vec)>;
-        struct Context {
-            pickup_time_vec_t* pickup_time_vec;
-            dropoff_time_vec_t* dropoff_time_vec;
-            duration_vec_t* duration_vec;
-            decltype(pickup_time_vec->clbegin()) pickup_time_it;
-            decltype(dropoff_time_vec->clbegin()) dropoff_time_it;
-            decltype(duration_vec->lbegin()) duration_it;
-            size_t idx;
-            size_t idx_end;
-            bool fetch_end;
-
-            Context(pickup_time_vec_t* pickup_time_vec, dropoff_time_vec_t* dropoff_time_vec,
-                    duration_vec_t* duration_vec, size_t idx, size_t idx_end)
-                : pickup_time_vec(pickup_time_vec),
-                  dropoff_time_vec(dropoff_time_vec),
-                  duration_vec(duration_vec),
-                  idx(idx),
-                  idx_end(idx_end),
-                  fetch_end(false)
-            {
-            }
-
-            void pin()
-            {
-                pickup_time_it.pin();
-                dropoff_time_it.pin();
-                duration_it.pin();
-            }
-
-            void unpin()
-            {
-                pickup_time_it.unpin();
-                dropoff_time_it.unpin();
-                duration_it.unpin();
-            }
-
-            bool fetched()
-            {
-                return duration_it.at_local() && dropoff_time_it.at_local() &&
-                       pickup_time_it.at_local();
-            }
-
-            bool run(DereferenceScope& scope)
-            {
-                if (fetch_end) {
-                    goto next;
-                }
-                while (idx < idx_end) {
-                    pickup_time_it = pickup_time_vec->clbegin().nextn(idx);
-                    pickup_time_it.async_fetch(scope);
-                    dropoff_time_it = dropoff_time_vec->clbegin().nextn(idx);
-                    dropoff_time_it.async_fetch(scope);
-                    duration_it = duration_vec->lbegin().nextn(idx);
-                    duration_it.async_fetch(scope);
-                    fetch_end = true;
-                    if (!fetched()) {
-                        return false;
-                    }
-                next:
-                    *duration_it = dropoff_time_it->to_second() - pickup_time_it->to_second();
-                    idx++;
-                    fetch_end = false;
-                }
-                return true;
-            }
-        };
-        RootDereferenceScope scope;
-        const size_t block = (pickup_time_vec.size() + CTX_COUNT - 1) / CTX_COUNT;
-        SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < pickup_time_vec.size(), i += block,
-                                scope)
-        return Context(&pickup_time_vec, &dropoff_time_vec, &duration_vec, i,
-                       std::min(i + block, pickup_time_vec.size()));
-        SCOPED_INLINE_ASYNC_FOR_END
     } else {
         ERROR("algorithm dont exist");
     }
@@ -482,71 +345,13 @@ void calculate_distribution_store_and_fwd_flag(StdDataFrame<uint64_t>& df)
                     std::cout << *(scp.it) << ", ";
                 }
             });
-    } else if constexpr (alg == PREFETCH) {
+    } else if constexpr (alg == PREFETCH || alg == PARAROUTINE) {
         RootDereferenceScope scope;
         auto it         = unique_vendor_id_vec.clbegin(scope);
         size_t vec_size = unique_vendor_id_vec.size();
         for (size_t i = 0; i < vec_size; i++, it.next(scope)) {
             std::cout << *it << ", ";
         }
-    } else if constexpr (alg == PARAROUTINE) {
-        WARN("deprecated");
-        using unique_vendor_id_vec_t = std::remove_reference_t<decltype(unique_vendor_id_vec)>;
-        struct Context {
-            unique_vendor_id_vec_t* unique_vendor_id_vec;
-            decltype(unique_vendor_id_vec->clbegin()) it;
-            size_t idx;
-            size_t idx_end;
-            bool fetch_end;
-
-            Context(unique_vendor_id_vec_t* unique_vendor_id_vec, size_t idx, size_t idx_end)
-                : unique_vendor_id_vec(unique_vendor_id_vec),
-                  idx(idx),
-                  idx_end(idx_end),
-                  fetch_end(false)
-            {
-            }
-
-            void pin()
-            {
-                it.pin();
-            }
-
-            void unpin()
-            {
-                it.unpin();
-            }
-
-            bool fetched()
-            {
-                return it.at_local();
-            }
-
-            bool run(DereferenceScope& scope)
-            {
-                if (fetch_end) {
-                    goto next;
-                }
-                while (idx < idx_end) {
-                    it        = unique_vendor_id_vec->clbegin().nextn(idx);
-                    fetch_end = true;
-                    if (!it.async_fetch(scope)) {
-                        return false;
-                    }
-                next:
-                    std::cout << *it << ", ";
-                    idx++;
-                    fetch_end = false;
-                }
-                return true;
-            }
-        };
-        RootDereferenceScope scope;
-        const size_t vec_size = unique_vendor_id_vec.size();
-        const size_t block    = (vec_size + CTX_COUNT - 1) / CTX_COUNT;
-        SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < vec_size, i += block, scope)
-        return Context(&unique_vendor_id_vec, i, std::min(i + block, vec_size));
-        SCOPED_INLINE_ASYNC_FOR_END
     } else {
         ERROR("alg dont exist");
     }
@@ -642,7 +447,7 @@ void calculate_haversine_distance_column(StdDataFrame<uint64_t>& df)
                                   *(scp.dropoff_latitude_it), *(scp.dropoff_longitude_it));
                 }
             });
-    } else if constexpr (alg == PREFETCH) {
+    } else if constexpr (alg == PREFETCH || alg == PARAROUTINE) {
         struct Scope : public RootDereferenceScope {
             decltype(pickup_latitude_vec.clbegin()) pickup_latitude_it;
             decltype(pickup_longitude_vec.clbegin()) pickup_longitude_it;
@@ -687,125 +492,6 @@ void calculate_haversine_distance_column(StdDataFrame<uint64_t>& df)
                 haversine(*(scope.pickup_latitude_it), *(scope.pickup_longitude_it),
                           *(scope.dropoff_latitude_it), *(scope.dropoff_longitude_it));
         }
-    } else if constexpr (alg == PARAROUTINE) {
-        WARN("deprecated");
-        using pickup_latitude_vec_t   = std::remove_reference_t<decltype(pickup_latitude_vec)>;
-        using pickup_longitude_vec_t  = std::remove_reference_t<decltype(pickup_longitude_vec)>;
-        using dropoff_latitude_vec_t  = std::remove_reference_t<decltype(dropoff_latitude_vec)>;
-        using dropoff_longitude_vec_t = std::remove_reference_t<decltype(dropoff_longitude_vec)>;
-        using haversine_vec_t         = std::remove_reference_t<decltype(haversine_distance_vec)>;
-
-        struct Context {
-            pickup_latitude_vec_t* pickup_latitude_vec;
-            pickup_longitude_vec_t* pickup_longitude_vec;
-            dropoff_latitude_vec_t* dropoff_latitude_vec;
-            dropoff_longitude_vec_t* dropoff_longitude_vec;
-            haversine_vec_t* haversine_vec;
-            decltype(pickup_latitude_vec->clbegin()) pickup_latitude_it;
-            decltype(pickup_longitude_vec->clbegin()) pickup_longitude_it;
-            decltype(dropoff_latitude_vec->clbegin()) dropoff_latitude_it;
-            decltype(dropoff_longitude_vec->clbegin()) dropoff_longitude_it;
-            decltype(haversine_vec->lbegin()) haversine_it;
-            size_t idx;
-            size_t idx_end;
-            double hav;
-            enum Stage { INIT, LOCATION_FETCHING, HAVERSINE_FETCHING } stage;
-
-            Context(pickup_latitude_vec_t* pickup_latitude_vec,
-                    pickup_longitude_vec_t* pickup_longitude_vec,
-                    dropoff_latitude_vec_t* dropoff_latitude_vec,
-                    dropoff_longitude_vec_t* dropoff_longitude_vec, haversine_vec_t* haversine_vec,
-                    size_t idx, size_t idx_end)
-                : pickup_latitude_vec(pickup_latitude_vec),
-                  pickup_longitude_vec(pickup_longitude_vec),
-                  dropoff_latitude_vec(dropoff_latitude_vec),
-                  dropoff_longitude_vec(dropoff_longitude_vec),
-                  haversine_vec(haversine_vec),
-                  idx(idx),
-                  idx_end(idx_end),
-                  stage(INIT)
-            {
-            }
-            void pin()
-            {
-                pickup_latitude_it.pin();
-                pickup_longitude_it.pin();
-                dropoff_latitude_it.pin();
-                dropoff_longitude_it.pin();
-                haversine_it.pin();
-            }
-            void unpin()
-            {
-                pickup_latitude_it.unpin();
-                pickup_longitude_it.unpin();
-                dropoff_latitude_it.unpin();
-                dropoff_longitude_it.unpin();
-                haversine_it.unpin();
-            }
-            bool fetched()
-            {
-                switch (stage) {
-                    case LOCATION_FETCHING:
-                        return dropoff_longitude_it.at_local() && dropoff_latitude_it.at_local() &&
-                               pickup_longitude_it.at_local() && pickup_latitude_it.at_local();
-                    case HAVERSINE_FETCHING:
-                        return haversine_it.at_local();
-                    case INIT:
-                        return true;
-                    default:
-                        ERROR("stage not exist");
-                }
-            }
-            bool run(DereferenceScope& scope)
-            {
-                switch (stage) {
-                    case INIT:
-                        break;
-                    case LOCATION_FETCHING:
-                        goto location_fetched;
-                    case HAVERSINE_FETCHING:
-                        goto haversine_fetched;
-                    default:
-                        ERROR("stage not exist");
-                }
-                while (idx < idx_end) {
-                    pickup_latitude_it = pickup_latitude_vec->clbegin().nextn(idx);
-                    pickup_latitude_it.async_fetch(scope);
-                    pickup_longitude_it = pickup_longitude_vec->clbegin().nextn(idx);
-                    pickup_longitude_it.async_fetch(scope);
-                    dropoff_latitude_it = dropoff_latitude_vec->clbegin().nextn(idx);
-                    dropoff_latitude_it.async_fetch(scope);
-                    dropoff_longitude_it = dropoff_longitude_vec->clbegin().nextn(idx);
-                    dropoff_longitude_it.async_fetch(scope);
-                    haversine_it = haversine_vec->lbegin().nextn(idx);
-                    haversine_it.async_fetch(scope);
-                    stage = LOCATION_FETCHING;
-                    if (!fetched()) {
-                        return false;
-                    }
-                location_fetched:
-                    hav = haversine(*pickup_latitude_it, *pickup_longitude_it, *dropoff_latitude_it,
-                                    *dropoff_longitude_it);
-                    stage = HAVERSINE_FETCHING;
-                    if (!fetched()) {
-                        return false;
-                    }
-                haversine_fetched:
-                    *haversine_it = hav;
-                    idx++;
-                    stage = INIT;
-                }
-                return true;
-            }
-        };
-        RootDereferenceScope scope;
-        const size_t block = (pickup_longitude_vec.size() + CTX_COUNT - 1) / CTX_COUNT;
-        SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < pickup_longitude_vec.size(), i += block,
-                                scope)
-        return Context(&pickup_latitude_vec, &pickup_longitude_vec, &dropoff_latitude_vec,
-                       &dropoff_longitude_vec, &haversine_distance_vec, i,
-                       std::min(i + block, pickup_longitude_vec.size()));
-        SCOPED_INLINE_ASYNC_FOR_END
     } else {
         ERROR("algorithm dont exist");
     }
@@ -926,7 +612,7 @@ void analyze_trip_timestamp(StdDataFrame<uint64_t>& df)
                         *(scp.month_it) = scp.time_it->month_;
                     }
                 });
-        } else if constexpr (alg == PREFETCH) {
+        } else if constexpr (alg == PREFETCH || alg == PARAROUTINE) {
             struct Scope : public RootDereferenceScope {
                 decltype(pickup_time_vec.clbegin()) pickup_time_it;
                 decltype(pickup_hour_vec.lbegin()) pickup_hour_it;
@@ -970,121 +656,6 @@ void analyze_trip_timestamp(StdDataFrame<uint64_t>& df)
                 *(scope.pickup_day_it)   = scope.pickup_time_it->day_;
                 *(scope.pickup_month_it) = scope.pickup_time_it->month_;
             }
-        } else if constexpr (alg == PARAROUTINE) {
-            WARN("deprecated");
-            using time_vec_t  = std::remove_reference_t<decltype(pickup_time_vec)>;
-            using hour_vec_t  = std::remove_reference_t<decltype(pickup_hour_vec)>;
-            using day_vec_t   = std::remove_reference_t<decltype(pickup_day_vec)>;
-            using month_vec_t = std::remove_reference_t<decltype(pickup_month_vec)>;
-            using hour_map_t  = std::remove_reference_t<decltype(pickup_hour_map)>;
-            using day_map_t   = std::remove_reference_t<decltype(pickup_day_map)>;
-            using month_map_t = std::remove_reference_t<decltype(pickup_month_map)>;
-
-            struct Context {
-                time_vec_t* time_vec;
-                hour_vec_t* hour_vec;
-                day_vec_t* day_vec;
-                month_vec_t* month_vec;
-                hour_map_t* hour_map;
-                day_map_t* day_map;
-                month_map_t* month_map;
-                decltype(time_vec->clbegin()) time_it;
-                decltype(hour_vec->lbegin()) hour_it;
-                decltype(day_vec->lbegin()) day_it;
-                decltype(month_vec->lbegin()) month_it;
-                size_t idx;
-                size_t idx_end;
-                enum Stage { TIME_FETCHING, TIME_FETCHED, ALL_FETCHED } stage;
-
-                void pin()
-                {
-                    time_it.pin();
-                    hour_it.pin();
-                    day_it.pin();
-                    month_it.pin();
-                }
-                void unpin()
-                {
-                    time_it.unpin();
-                    hour_it.unpin();
-                    day_it.unpin();
-                    month_it.unpin();
-                }
-
-                bool fetched()
-                {
-                    switch (stage) {
-                        case TIME_FETCHING:
-                            return true;
-                        case TIME_FETCHED:
-                            return time_it.at_local();
-                        case ALL_FETCHED:
-                            return hour_it.at_local() && day_it.at_local() && month_it.at_local();
-                        default:
-                            ERROR("state error");
-                    }
-                }
-
-                bool run(DereferenceScope& scope)
-                {
-                    switch (stage) {
-                        case TIME_FETCHING:
-                            break;
-                        case TIME_FETCHED:
-                            goto time_fetched;
-                        case ALL_FETCHED:
-                            goto all_fetched;
-                        default:
-                            ERROR("stage not exist");
-                    }
-                    while (idx < idx_end) {
-                        time_it = time_vec->clbegin().nextn(idx);
-                        time_it.async_fetch(scope);
-                        hour_it = hour_vec->lbegin().nextn(idx);
-                        hour_it.async_fetch(scope);
-                        day_it = day_vec->lbegin().nextn(idx);
-                        day_it.async_fetch(scope);
-                        month_it = month_vec->lbegin().nextn(idx);
-                        month_it.async_fetch(scope);
-                        stage = TIME_FETCHED;
-                        if (!fetched()) {
-                            return false;
-                        }
-                    time_fetched:
-                        (*hour_map)[time_it->hour_]++;
-                        (*day_map)[time_it->day_]++;
-                        (*month_map)[time_it->month_]++;
-                        stage = ALL_FETCHED;
-                        if (!fetched()) {
-                            return false;
-                        }
-                    all_fetched:
-                        *hour_it  = time_it->hour_;
-                        *day_it   = time_it->day_;
-                        *month_it = time_it->month_;
-                        idx++;
-                        stage = TIME_FETCHING;
-                    }
-                    return true;
-                }
-            };
-            RootDereferenceScope scope;
-            const size_t block = (pickup_time_vec.size() + CTX_COUNT - 1) / CTX_COUNT;
-            SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < pickup_time_vec.size(), i += block,
-                                    scope)
-            return Context{
-                .time_vec  = &pickup_time_vec,
-                .hour_vec  = &pickup_hour_vec,
-                .day_vec   = &pickup_day_vec,
-                .month_vec = &pickup_month_vec,
-                .hour_map  = &pickup_hour_map,
-                .day_map   = &pickup_day_map,
-                .month_map = &pickup_month_map,
-                .idx       = i,
-                .idx_end   = std::min(i + block, pickup_time_vec.size()),
-                .stage     = Context::TIME_FETCHING,
-            };
-            SCOPED_INLINE_ASYNC_FOR_END
         } else {
             ERROR("algorithm dont exist");
         }
@@ -1190,7 +761,7 @@ void analyze_trip_durations_of_timestamps(StdDataFrame<uint64_t>& df, const char
                               << std::endl;
                 }
             });
-    } else if constexpr (alg == PREFETCH) {
+    } else if constexpr (alg == PREFETCH || alg == PARAROUTINE) {
         struct Scope : public RootDereferenceScope {
             decltype(key_vec.clbegin()) key_it;
             decltype(duration_vec.clbegin()) duration_it;
@@ -1218,70 +789,6 @@ void analyze_trip_durations_of_timestamps(StdDataFrame<uint64_t>& df, const char
         for (uint64_t i = 0; i < key_vec.size(); i++, scope.next()) {
             std::cout << static_cast<int>(*scope.key_it) << " " << *scope.duration_it << std::endl;
         }
-    } else if constexpr (alg == PARAROUTINE) {
-        WARN("deprecated");
-        using key_vec_t      = std::remove_reference_t<decltype(key_vec)>;
-        using duration_vec_t = std::remove_reference_t<decltype(duration_vec)>;
-
-        struct Context {
-            key_vec_t* key_vec;
-            duration_vec_t* duration_vec;
-            decltype(key_vec->clbegin()) key_it;
-            decltype(duration_vec->clbegin()) duration_it;
-            size_t idx;
-            size_t idx_end;
-            bool fetch_end;
-
-            void pin()
-            {
-                key_it.pin();
-                duration_it.pin();
-            }
-
-            void unpin()
-            {
-                key_it.unpin();
-                duration_it.unpin();
-            }
-
-            bool fetched()
-            {
-                return key_it.at_local() && duration_it.at_local();
-            }
-
-            bool run(DereferenceScope& scope)
-            {
-                if (fetch_end) {
-                    goto next;
-                }
-                while (idx < idx_end) {
-                    key_it = key_vec->clbegin().nextn(idx);
-                    key_it.async_fetch(scope);
-                    duration_it = duration_vec->clbegin().nextn(idx);
-                    duration_it.async_fetch(scope);
-                    fetch_end = true;
-                    if (!fetched()) {
-                        return false;
-                    }
-                next:
-                    std::cout << static_cast<int>(*key_it) << " " << *duration_it << std::endl;
-                    idx++;
-                    fetch_end = false;
-                }
-                return true;
-            }
-        };
-        RootDereferenceScope scope;
-        const size_t block = (key_vec.size() + CTX_COUNT - 1) / CTX_COUNT;
-        SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < key_vec.size(), i += block, scope)
-        return Context{
-            .key_vec      = &key_vec,
-            .duration_vec = &duration_vec,
-            .idx          = i,
-            .idx_end      = std::min(i + block, key_vec.size()),
-            .fetch_end    = false,
-        };
-        SCOPED_INLINE_ASYNC_FOR_END
     } else {
         ERROR("alg not exists");
     }

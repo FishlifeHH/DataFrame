@@ -192,6 +192,7 @@ static inline void _sort_by_sorted_index_copy_(FarLib::FarVector<T>& to_be_sorte
             }
         }
     } else if constexpr (alg == PARAROUTINE) {
+        // TODO
         WARN("deprecated");
         struct Context {
             FarLib::FarVector<T>* to_be_sorted;

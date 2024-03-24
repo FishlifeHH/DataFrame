@@ -474,68 +474,13 @@ typename DataFrame<I, H>::size_type DataFrame<I, H>::load_column(
                         *(scp.data_it) = _get_nan<T>();
                     }
                 });
-        } else if constexpr (alg == PREFETCH) {
+        } else if constexpr (alg == PREFETCH || alg == PARAROUTINE) {
             data.resize(idx_s);
             RootDereferenceScope scope;
             auto it = data.lbegin(scope).nextn(data_s, scope);
             for (size_t i = 0; i < idx_s - data_s; i++, it.next(scope)) {
                 *it = _get_nan<T>();
             }
-        } else if constexpr (alg == PARAROUTINE) {
-            WARN("deprecated");
-            using data_t = std::remove_reference_t<decltype(data)>;
-            struct Context {
-                data_t* data;
-                decltype(data->lbegin()) it;
-                size_t idx;
-                size_t idx_end;
-                bool fetch_end;
-
-                void pin()
-                {
-                    it.pin();
-                }
-
-                void unpin()
-                {
-                    it.unpin();
-                }
-
-                bool fetched()
-                {
-                    return it.at_local();
-                }
-
-                bool run(DereferenceScope& scope)
-                {
-                    if (fetch_end) {
-                        goto next;
-                    }
-                    while (idx < idx_end) {
-                        it        = data->lbegin().nextn(idx);
-                        fetch_end = true;
-                        if (!it.async_fetch(scope)) {
-                            return false;
-                        }
-                    next:
-                        *it = _get_nan<T>();
-                        idx++;
-                        fetch_end = false;
-                    }
-                    return true;
-                }
-            };
-            data.resize(idx_s);
-            RootDereferenceScope scope;
-            const size_t block = (idx_s - data_s + CTX_COUNT - 1) / CTX_COUNT;
-            SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < idx_s - data_s, i += block, scope)
-            return Context{
-                .data      = &data,
-                .idx       = i,
-                .idx_end   = std::min(i + block, idx_s - data_s),
-                .fetch_end = false,
-            };
-            SCOPED_INLINE_ASYNC_FOR_END
         } else {
             ERROR("alg dont exist");
         }
