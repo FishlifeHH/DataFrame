@@ -442,14 +442,38 @@ typename DataFrame<I, H>::size_type DataFrame<I, H>::load_column(
             }
         } else if constexpr (alg == UTHREAD) {
             data.resize(idx_s);
-            uthread::parallel_for_with_scope<1>(uthread::get_worker_count(), idx_s - data_s,
-                                                [&](size_t i, DereferenceScope& scope) {
-                                                    ON_MISS_BEGIN
-                                                    uthread::yield();
-                                                    ON_MISS_END
-                                                    *(data.at_mut(i + data_s, scope, __on_miss__)) =
-                                                        _get_nan<T>();
-                                                });
+            const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
+            const size_t block      = (idx_s - data_s + thread_cnt - 1) / thread_cnt;
+            uthread::parallel_for_with_scope<1>(
+                thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
+                    ON_MISS_BEGIN
+                    uthread::yield();
+                    ON_MISS_END
+                    using data_it_t = decltype(data.lbegin());
+                    struct Scope : public DereferenceScope {
+                        data_it_t data_it;
+
+                        void pin() const override
+                        {
+                            data_it.pin();
+                        }
+
+                        void unpin() const override
+                        {
+                            data_it.unpin();
+                        }
+
+                        Scope(DereferenceScope* scope) : DereferenceScope(scope) {}
+
+                    } scp(&scope);
+                    const size_t idx_start = i * block;
+                    const size_t idx_end   = std::min(idx_start + block, idx_s - data_s);
+                    scp.data_it            = data.get_lite_iter(data_s, scp, __on_miss__);
+                    for (size_t idx = idx_start; idx < idx_end;
+                         idx++, scp.data_it.next(scp, __on_miss__)) {
+                        *(scp.data_it) = _get_nan<T>();
+                    }
+                });
         } else if constexpr (alg == PREFETCH) {
             data.resize(idx_s);
             RootDereferenceScope scope;
@@ -458,6 +482,7 @@ typename DataFrame<I, H>::size_type DataFrame<I, H>::load_column(
                 *it = _get_nan<T>();
             }
         } else if constexpr (alg == PARAROUTINE) {
+            WARN("deprecated");
             using data_t = std::remove_reference_t<decltype(data)>;
             struct Context {
                 data_t* data;

@@ -1368,7 +1368,7 @@ class LIBRARY_API DataFrame : public ThreadGranularity
     // sel_functor:
     //   A reference to the selecting functor
     //
-    template <Algorithm alg, typename T, typename F, typename... Ts>
+    template <Algorithm alg, bool trvial_opt, typename T, typename F, typename... Ts>
     [[nodiscard]] DataFrame get_data_by_sel(const char* name, F& sel_functor) const;
 
     // This is identical with above get_data_by_sel(), but:

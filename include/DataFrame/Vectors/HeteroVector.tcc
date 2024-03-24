@@ -131,13 +131,34 @@ void HeteroVector::visit_impl_help_(T& visitor)
         if constexpr (alg == DEFAULT) {
             for (auto&& element : iter->second) visitor(element);
         } else if constexpr (alg == UTHREAD) {
+            const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
+            const size_t block      = (iter->second.size() + thread_cnt - 1) / thread_cnt;
             uthread::parallel_for_with_scope<1>(
-                uthread::get_worker_count(), iter->second.size(),
-                [&](size_t i, DereferenceScope& scope) {
+                thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
                     ON_MISS_BEGIN
                     uthread::yield();
                     ON_MISS_END
-                    visitor(*(iter->second.at(i, scope, __on_miss__)));
+                    using it_t = decltype(iter->second.clbegin());
+                    struct Scope : public DereferenceScope {
+                        it_t it;
+
+                        void pin() const override
+                        {
+                            it.pin();
+                        }
+
+                        void unpin() const override
+                        {
+                            it.unpin();
+                        }
+                    } scp(&scope);
+                    const size_t idx_start = i * block;
+                    const size_t idx_end   = std::min(idx_start + block, iter->second.size());
+                    scp.it = iter->second.get_const_lite_iter(idx_start, scp, __on_miss__);
+                    for (size_t idx = idx_start; idx < idx_end;
+                         idx++, scp.it.next(scp, __on_miss__)) {
+                        visitor(*(scp.it));
+                    }
                 });
         } else if constexpr (alg == PREFETCH) {
             RootDereferenceScope scope;
@@ -147,6 +168,7 @@ void HeteroVector::visit_impl_help_(T& visitor)
                 visitor(*it);
             }
         } else if constexpr (alg == PARAROUTINE) {
+            WARN("deprecateed");
             using vec_t     = std::remove_reference_t<decltype(iter->second)>;
             using visitor_t = std::remove_reference_t<decltype(visitor)>;
             struct Context {
@@ -223,13 +245,34 @@ void HeteroVector::visit_impl_help_(T& visitor) const
         if constexpr (alg == DEFAULT) {
             for (auto&& element : citer->second) visitor(element);
         } else if constexpr (alg == UTHREAD) {
+            const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
+            const size_t block      = (citer->second.size() + thread_cnt - 1) / thread_cnt;
             uthread::parallel_for_with_scope<1>(
-                uthread::get_worker_count(), citer->second.size(),
-                [&](size_t i, DereferenceScope& scope) {
+                thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
                     ON_MISS_BEGIN
                     uthread::yield();
                     ON_MISS_END
-                    visitor(*(citer->second.at(i, scope, __on_miss__)));
+                    using it_t = decltype(citer->second.clbegin());
+                    struct Scope : public DereferenceScope {
+                        it_t it;
+
+                        void pin() const override
+                        {
+                            it.pin();
+                        }
+                        void unpin() const override
+                        {
+                            it.unpin();
+                        }
+
+                    } scp(&scope);
+                    const size_t idx_start = i * block;
+                    const size_t idx_end   = std::min(idx_start + block, citer->second.size());
+                    scp.it = citer->second.get_const_lite_iter(idx_start, scp, __on_miss__);
+                    for (size_t idx = idx_start; idx < idx_end;
+                         idx++, scp.it.next(scp, __on_miss__)) {
+                        visitor(*(scp.it));
+                    }
                 });
         } else if constexpr (alg == PREFETCH) {
             RootDereferenceScope scope;

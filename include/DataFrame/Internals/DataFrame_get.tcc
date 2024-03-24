@@ -162,6 +162,7 @@ template <Algorithm alg, typename T>
 FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values(const char* name) const
 {
     using namespace FarLib::cache;
+    using namespace FarLib;
     const ColumnVecType<T>& vec = get_column<T>(name);
     auto hash_func              = [](std::reference_wrapper<const T> v) -> std::size_t {
         return (std::hash<T>{}(v.get()));
@@ -179,7 +180,7 @@ FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values(const char* name) co
 
     result.reserve(vec.size());
     // TODO cannot use multithread for std set
-    if constexpr (alg == DEFAULT || alg == UTHREAD) {
+    if constexpr (alg == DEFAULT) {
         RootDereferenceScope scope;
         ON_MISS_BEGIN
         ON_MISS_END
@@ -195,6 +196,47 @@ FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values(const char* name) co
 
             if (insert_ret.second) result.push_back(citer, scope);
         }
+    } else if constexpr (alg == UTHREAD) {
+        assert(uthread::get_worker_count() == 1);
+        const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
+        const size_t block      = (vec.size() + thread_cnt - 1) / thread_cnt;
+        uthread::parallel_for_with_scope<1>(
+            thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
+                ON_MISS_BEGIN
+                uthread::yield();
+                ON_MISS_END
+                using it_t = decltype(vec.clbegin());
+                struct Scope : public DereferenceScope {
+                    it_t it;
+
+                    void pin() const override
+                    {
+                        it.pin();
+                    }
+
+                    void unpin() const override
+                    {
+                        it.unpin();
+                    }
+
+                    Scope(DereferenceScope* scope) : DereferenceScope(scope) {}
+                } scp(&scope);
+                const size_t idx_start = i * block;
+                const size_t idx_end   = std::min(idx_start + block, vec.size());
+                scp.it                 = vec.get_const_lite_iter(idx_start, scp, __on_miss__);
+                for (size_t idx = idx_start; idx < idx_end; idx++, scp.it.next(scp, __on_miss__)) {
+                    auto citer = *(scp.it);
+                    if (_is_nan<T>(citer) && !counted_nan) {
+                        counted_nan = true;
+                        result.push_back(_get_nan<T>(), scp);
+                        continue;
+                    }
+
+                    const auto insert_ret = table.emplace(std::ref(citer));
+
+                    if (insert_ret.second) result.push_back(citer, scp);
+                }
+            });
     } else if constexpr (alg == PREFETCH) {
         bool counted_nan = false;
         RootDereferenceScope scope;
@@ -211,6 +253,7 @@ FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values(const char* name) co
             }
         }
     } else if constexpr (alg == PARAROUTINE) {
+        WARN("deprecated");
         using namespace FarLib;
         using vec_t    = std::remove_reference_t<decltype(vec)>;
         using result_t = std::remove_reference_t<decltype(result)>;
@@ -330,22 +373,78 @@ V& DataFrame<I, H>::visit(const char* name, V& visitor)
             visitor(*indices_[i], nan_val);
         }
     } else if constexpr (alg == UTHREAD) {
-        uthread::parallel_for_with_scope<1>(uthread::get_worker_count() * UTH_FACTOR, min_s,
-                                            [&](size_t idx, DereferenceScope& scope) {
-                                                ON_MISS_BEGIN
-                                                uthread::yield();
-                                                ON_MISS_END
-                                                visitor(*(indices_.at(idx, scope, __on_miss__)),
-                                                        *(vec.at(idx, scope, __on_miss__)));
-                                            });
+        const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
+        const size_t block1     = (min_s + thread_cnt - 1) / thread_cnt;
         uthread::parallel_for_with_scope<1>(
-            uthread::get_worker_count() * UTH_FACTOR, idx_s - min_s,
-            [&](size_t idx, DereferenceScope& scope) {
+            thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
                 ON_MISS_BEGIN
                 uthread::yield();
                 ON_MISS_END
-                T nan_val = _get_nan<T>();
-                visitor(*(indices_.at(idx + min_s, scope, __on_miss__)), nan_val);
+                using ind_it_t = decltype(indices_.clbegin());
+                using vec_it_t = decltype(vec.clbegin());
+                struct Scope : public DereferenceScope {
+                    ind_it_t ind_it;
+                    vec_it_t vec_it;
+
+                    void pin() const override
+                    {
+                        ind_it.pin();
+                        vec_it.pin();
+                    }
+
+                    void unpin() const override
+                    {
+                        ind_it.unpin();
+                        vec_it.unpin();
+                    }
+
+                    void next(__DMH__)
+                    {
+                        ind_it.next(*this, __on_miss__);
+                        vec_it.next(*this, __on_miss__);
+                    }
+
+                    Scope(DereferenceScope* scope) : DereferenceScope(scope) {}
+
+                } scp(&scope);
+                const size_t idx_start = i * block1;
+                const size_t idx_end   = std::min(idx_start + block1, min_s);
+                scp.ind_it             = indices_.get_const_lite_iter(idx_start, scp, __on_miss__);
+                scp.vec_it             = vec.get_const_lite_iter(idx_start, scp, __on_miss__);
+                for (size_t idx = idx_start; idx < idx_end; idx++, scp.next(__on_miss__)) {
+                    visitor(*(scp.ind_it), *(scp.vec_it));
+                }
+            });
+        const size_t block2 = (idx_s - min_s + thread_cnt - 1) / thread_cnt;
+        uthread::parallel_for_with_scope<1>(
+            thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
+                ON_MISS_BEGIN
+                uthread::yield();
+                ON_MISS_END
+                using ind_it_t = decltype(indices_.clbegin());
+                struct Scope : public DereferenceScope {
+                    ind_it_t ind_it;
+
+                    void pin() const override
+                    {
+                        ind_it.pin();
+                    }
+
+                    void unpin() const override
+                    {
+                        ind_it.unpin();
+                    }
+
+                    Scope(DereferenceScope* scope) : DereferenceScope(scope) {}
+                } scp(&scope);
+                const size_t idx_start = i * block2;
+                const size_t idx_end   = std::min(idx_start + block2, idx_s - min_s);
+                scp.ind_it = indices_.get_const_lite_iter(idx_s + idx_start, scope, __on_miss__);
+                for (size_t idx = idx_start; idx < idx_end;
+                     idx++, scp.ind_it.next(scp, __on_miss__)) {
+                    T nan_val = _get_nan<T>();
+                    visitor(*(scp.ind_it), nan_val);
+                }
             });
 
     } else if constexpr (alg == PREFETCH) {
@@ -1118,7 +1217,7 @@ DataFramePtrView<I> DataFrame<I, H>::get_view_by_loc(const std::vector<long>& lo
 
 // ----------------------------------------------------------------------------
 template <typename I, typename H>
-template <Algorithm alg, typename T, typename F, typename... Ts>
+template <Algorithm alg, bool trivial_opt, typename T, typename F, typename... Ts>
 DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functor) const
 {
     using namespace FarLib;
@@ -1132,45 +1231,122 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
     perf_profile([&]() {
         if constexpr (alg == DEFAULT) {
             for (size_type i = 0; i < col_s; ++i)
-                if (sel_functor(*indices_[i], *vec[i])) col_indices.push_back(i);
+                if constexpr (trivial_opt) {
+                    if (sel_functor(i, *vec[i])) col_indices.push_back(i);
+                } else {
+                    if (sel_functor(*indices_[i], *vec[i])) col_indices.push_back(i);
+                }
         } else if constexpr (alg == UTHREAD) {
             // only available if index = [0...idx_s - 1]
-            std::vector<std::vector<size_type>> uthread_col_indices(uthread::get_worker_count() *
-                                                                    UTH_FACTOR);
-            for (auto& v : uthread_col_indices) {
-                v.reserve(idx_s / (uthread::get_worker_count() * UTH_FACTOR));
-            }
-            const size_t block =
-                (idx_s + uthread::get_worker_count() - 1) / uthread::get_worker_count();
+            const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
+            const size_t block      = (idx_s + thread_cnt - 1) / thread_cnt;
             uthread::parallel_for_with_scope<1>(
-                uthread::get_worker_count() * UTH_FACTOR, uthread::get_worker_count() * UTH_FACTOR,
-                [&](size_t i, DereferenceScope& scope) {
-                    size_t lim = std::min((i + 1) * block, idx_s);
+                thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
                     ON_MISS_BEGIN
                     uthread::yield();
                     ON_MISS_END
-                    for (size_t index = i * block; index < lim; index++) {
-                        T elem = *(vec.at(index, scope, __on_miss__));
-                        if (sel_functor(index, elem)) {
-                            uthread_col_indices[i].push_back(index);
+                    // TODO another version for general usage
+                    const size_t idx_start = i * block;
+                    const size_t idx_end   = std::min(idx_start + block, idx_s);
+                    if constexpr (trivial_opt) {
+                        using vec_it_t = decltype(vec.clbegin());
+                        struct Scope : public DereferenceScope {
+                            vec_it_t vec_it;
+
+                            void pin() const override
+                            {
+                                vec_it.pin();
+                            }
+
+                            void unpin() const override
+                            {
+                                vec_it.unpin();
+                            }
+
+                            Scope(DereferenceScope* scope) : DereferenceScope(scope) {}
+                        } scp(&scope);
+                        scp.vec_it = vec.get_const_lite_iter(idx_start, scp, __on_miss__);
+                        for (size_t idx = idx_start; idx < idx_end;
+                             idx++, scp.vec_it.next(scp, __on_miss__)) {
+                            if (sel_functor(idx, *(scp.vec_it))) {
+                                col_indices.push_back(idx, scope);
+                            }
+                        }
+                    } else {
+                        using vec_it_t = decltype(vec.clbegin());
+                        using idx_it_t = decltype(indices_.clbegin());
+                        struct Scope : public DereferenceScope {
+                            vec_it_t vec_it;
+                            idx_it_t idx_it;
+                            void pin() const override
+                            {
+                                vec_it.pin();
+                                idx_it.pin();
+                            }
+
+                            void unpin() const override
+                            {
+                                vec_it.unpin();
+                                idx_it.unpin();
+                            }
+
+                            void next(__DMH__)
+                            {
+                                vec_it.next(*this, __on_miss__);
+                                idx_it.next(*this, __on_miss__);
+                            }
+                            Scope(DereferenceScope* scope) : DereferenceScope(scope) {}
+                        } scp(&scope);
+                        scp.vec_it = vec.get_const_lite_iter(idx_start, scp, __on_miss__);
+                        scp.idx_it = indices_.get_const_lite_iter(idx_start, scp, __on_miss__);
+                        for (size_t idx = idx_start; idx < idx_end; idx++, scp.next(__on_miss__)) {
+                            if (sel_functor(*(scp.idx_it), *(scp.vec_it))) {
+                                col_indices.push_back(idx, scope);
+                            }
                         }
                     }
                 });
-            {
-                RootDereferenceScope scope;
-                for (auto& v : uthread_col_indices) {
-                    for (auto& idx : v) {
-                        col_indices.push_back(idx, scope);
-                    }
-                }
-            }
         } else if constexpr (alg == PREFETCH) {
             // only available if index = [0...idx_s - 1]
-            RootDereferenceScope scope;
-            auto vec_it = vec.clbegin(scope);
-            for (size_t i = 0; i < idx_s; i++, vec_it.next(scope)) {
-                if (sel_functor(i, *(vec_it))) {
-                    col_indices.push_back(i, scope);
+            if constexpr (trivial_opt) {
+                RootDereferenceScope scope;
+                auto vec_it = vec.clbegin(scope);
+                for (size_t i = 0; i < idx_s; i++, vec_it.next(scope)) {
+                    if (sel_functor(i, *(vec_it))) {
+                        col_indices.push_back(i, scope);
+                    }
+                }
+            } else {
+                using vec_it_t = decltype(vec.clbegin());
+                using idx_it_t = decltype(indices_.clbegin());
+                struct Scope : public RootDereferenceScope {
+                    vec_it_t vec_it;
+                    idx_it_t idx_it;
+
+                    void pin() const override
+                    {
+                        vec_it.pin();
+                        idx_it.pin();
+                    }
+
+                    void unpin() const override
+                    {
+                        vec_it.unpin();
+                        idx_it.unpin();
+                    }
+
+                    void next()
+                    {
+                        vec_it.next(*this);
+                        idx_it.next(*this);
+                    }
+                } scope;
+                scope.vec_it = vec.clbegin(scope);
+                scope.idx_it = indices_.clbegin(scope);
+                for (size_t i = 0; i < idx_s; i++, scope.next()) {
+                    if (sel_functor(*(scope.idx_it), *(scope.vec_it))) {
+                        col_indices.push_back(i, scope);
+                    }
                 }
             }
         } else if constexpr (alg == PARAROUTINE) {

@@ -84,43 +84,84 @@ void DataFrame<I, H>::sort_common_(DataFrame<I, H>& df, FarLib::FarVector<T>& ve
         memset(cnts.get(), 0, sizeof(uint64_t) * cnts_size);
         if constexpr (alg == UTHREAD) {
             // this alg is unstable
-            size_t thread_nums = uthread::get_worker_count() * UTH_FACTOR;
-            std::vector<std::array<uint64_t, cnts_size>> cnt_threads(thread_nums);
-            size_t block = (vec.size() + thread_nums - 1);
+            const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
+            const size_t block1     = (vec.size() + thread_cnt - 1) / thread_cnt;
             uthread::parallel_for_with_scope<1>(
-                thread_nums, thread_nums, [&](size_t i, DereferenceScope& scope) {
+                thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
                     ON_MISS_BEGIN
                     uthread::yield();
                     ON_MISS_END
-                    for (size_t idx = i * block; idx < std::min((i + 1) * block, vec.size());
-                         idx++) {
-                        T elem = *(vec.at(idx, scope, __on_miss__));
-                        cnt_threads[i][elem - T_min]++;
+                    using it_t = decltype(vec.clbegin());
+                    struct Scope : public DereferenceScope {
+                        it_t it;
+
+                        void pin() const override
+                        {
+                            it.pin();
+                        }
+                        void unpin() const override
+                        {
+                            it.unpin();
+                        }
+
+                        Scope(DereferenceScope* scope) : DereferenceScope(scope) {}
+                    } scp(&scope);
+                    const size_t idx_start = i * block1;
+                    const size_t idx_end   = std::min(idx_start + block1, vec.size());
+                    scp.it                 = vec.get_const_lite_iter(idx_start, scp, __on_miss__);
+                    for (size_t idx = idx_start; idx < idx_end;
+                         idx++, scp.it.next(scp, __on_miss__)) {
+                        cnts[*(scp.it) - T_min]++;
                     }
                 });
-            for (uint64_t i = 0; i < cnts_size; i++) {
-                uint64_t temp_cnt = 0;
-                for (size_t ti = 0; ti < thread_nums; ti++) {
-                    temp_cnt += cnt_threads[ti][i];
-                }
-                cnts[i] += temp_cnt;
-            }
             for (uint64_t i = 1; i < cnts_size; i++) {
                 cnts[i] += cnts[i - 1];
             }
             const size_t vec_size = vec.size();
             sorting_idxs.template resize<true>(vec.size());
+            const size_t block2 = block1;
             uthread::parallel_for_with_scope<1>(
-                thread_nums, vec_size, [&](size_t i, DereferenceScope& scope) {
+                thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
                     ON_MISS_BEGIN
                     uthread::yield();
                     ON_MISS_END
-                    T elem   = *(vec.at(vec_size - 1 - i, scope, __on_miss__));
-                    auto idx = --cnts[elem - T_min];
-                    if constexpr (!Ascend) {
-                        idx = vec_size - idx - 1;
+                    using it_t     = decltype(vec.clbegin());
+                    using idx_it_t = decltype(sorting_idxs.lbegin());
+                    struct Scope : public DereferenceScope {
+                        it_t it;
+                        idx_it_t idx_it;
+
+                        void pin() const override
+                        {
+                            it.pin();
+                            idx_it.pin();
+                        }
+
+                        void unpin() const override
+                        {
+                            it.unpin();
+                            idx_it.unpin();
+                        }
+
+                        void prev(__DMH__)
+                        {
+                            it.prev(*this, __on_miss__);
+                            idx_it.prev(*this, __on_miss__);
+                        }
+
+                        Scope(DereferenceScope* scope) : DereferenceScope(scope) {}
+                    } scp(&scope);
+                    const size_t idx_start = i * block2;
+                    const size_t idx_end   = std::min(idx_start + block2, vec_size);
+                    scp.it                 = vec.get_const_lite_iter(idx_end - 1, scp, __on_miss__);
+                    scp.idx_it = sorting_idxs.get_lite_iter(idx_end - 1, scp, __on_miss__);
+                    for (size_t idx = idx_start; idx < idx_end; idx++, scp.prev(__on_miss__)) {
+                        auto new_idx = --cnts[*(scp.it) - T_min];
+                        if constexpr (!Ascend) {
+                            new_idx = vec_size - new_idx - 1;
+                        }
+                        *(scp.idx_it) = new_idx;
                     }
-                    *(sorting_idxs.at_mut(vec_size - 1 - i, scope, __on_miss__)) = idx;
                 });
         } else if constexpr (alg == PREFETCH) {
             {
@@ -162,6 +203,7 @@ void DataFrame<I, H>::sort_common_(DataFrame<I, H>& df, FarLib::FarVector<T>& ve
                 *(scope.idx_it) = idx;
             }
         } else if constexpr (alg == PARAROUTINE) {
+            WARN("deprecated");
             {
                 RootDereferenceScope scope;
                 for (auto it = vec.clbegin(scope); it < vec.clend(); it.next(scope)) {

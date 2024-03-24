@@ -104,15 +104,52 @@ static inline void _sort_by_sorted_index_copy_(FarLib::FarVector<T>& to_be_sorte
     FarLib::FarVector<T> result;
     result.template resize<true>(to_be_sorted.size());
     if constexpr (alg == UTHREAD) {
+        const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
+        const size_t block      = (to_be_sorted.size() + thread_cnt - 1) / thread_cnt;
         uthread::parallel_for_with_scope<1>(
-            uthread::get_worker_count(), to_be_sorted.size(),
-            [&](size_t i, DereferenceScope& scope) {
+            thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
                 ON_MISS_BEGIN
                 uthread::yield();
                 ON_MISS_END
-                size_t idx                  = *(sorting_idxs.at(i, scope, __on_miss__));
-                const T to_be_sorted_at_idx = *(to_be_sorted.at(i, scope, __on_miss__));
-                *(result.at_mut(idx, scope, __on_miss__)) = to_be_sorted_at_idx;
+                using idx_it_t        = decltype(sorting_idxs.clbegin());
+                using to_be_sort_it_t = decltype(to_be_sorted.clbegin());
+                using result_acc_t    = decltype(result.at_mut(0, scope, __on_miss__));
+                struct Scope : public DereferenceScope {
+                    idx_it_t idx_it;
+                    to_be_sort_it_t to_be_sort_it;
+                    result_acc_t result_acc;
+
+                    void pin()
+                    {
+                        idx_it.pin();
+                        to_be_sort_it.pin();
+                        result_acc.pin();
+                    }
+
+                    void unpin()
+                    {
+                        idx_it.unpin();
+                        to_be_sort_it.unpin();
+                        result_acc.unpin();
+                    }
+
+                    void next(__DMH__)
+                    {
+                        idx_it.next(*this, __on_miss__);
+                        to_be_sort_it.next(*this, __on_miss__);
+                    }
+
+                    Scope(DereferenceScope* scope) : DereferenceScope(scope) {}
+
+                } scp(&scope);
+                const size_t idx_start = i * block;
+                const size_t idx_end   = std::min(idx_start + block, to_be_sorted.size());
+                scp.idx_it        = sorting_idxs.get_const_lite_iter(idx_start, scp, __on_miss__);
+                scp.to_be_sort_it = to_be_sorted.get_const_lite_iter(idx_start, scp, __on_miss__);
+                for (size_t idx = idx_start; idx < idx_end; idx++, scp.next(__on_miss__)) {
+                    scp.result_acc    = result.at_mut(*(scp.idx_it), scp, __on_miss__);
+                    *(scp.result_acc) = *(scp.to_be_sort_it);
+                }
             });
     } else if constexpr (alg == PREFETCH) {
         {
@@ -155,6 +192,7 @@ static inline void _sort_by_sorted_index_copy_(FarLib::FarVector<T>& to_be_sorte
             }
         }
     } else if constexpr (alg == PARAROUTINE) {
+        WARN("deprecated");
         struct Context {
             FarLib::FarVector<T>* to_be_sorted;
             FarLib::FarVector<size_t>* sorting_idxs;
