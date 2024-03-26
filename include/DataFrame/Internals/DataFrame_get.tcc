@@ -30,10 +30,12 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <DataFrame/DataFrame.h>
 #include <DataFrame/DataFrameStatsVisitors.h>
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include <random>
 #include <unordered_set>
+#include <vector>
 
 #include "async/scoped_inline_task.hpp"
 #include "cache/accessor.hpp"
@@ -161,103 +163,172 @@ template <typename I, typename H>
 template <Algorithm alg, typename T>
 FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values(const char* name) const
 {
-    using namespace FarLib::cache;
-    using namespace FarLib;
-    const ColumnVecType<T>& vec = get_column<T>(name);
-    auto hash_func              = [](std::reference_wrapper<const T> v) -> std::size_t {
+    auto hash_func = [](std::reference_wrapper<const T> v) -> std::size_t {
         return (std::hash<T>{}(v.get()));
     };
     auto equal_func = [](std::reference_wrapper<const T> lhs,
                          std::reference_wrapper<const T> rhs) -> bool {
         return (lhs.get() == rhs.get());
     };
+    return get_col_unique_values_impl<alg, T>(name, std::forward<decltype(hash_func)>(hash_func),
+                                              std::forward<decltype(equal_func)>(equal_func));
+}
 
-    std::unordered_set<typename std::reference_wrapper<T>::type, decltype(hash_func),
-                       decltype(equal_func)>
-        table(vec.size(), hash_func, equal_func);
+template <typename I, typename H>
+template <Algorithm alg, typename T, typename F>
+FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values(const char* name, F&& func) const
+{
+    auto hash_func = [&func](std::reference_wrapper<const T> v) -> std::size_t {
+        return (std::hash<size_t>{}(func(v.get())));
+    };
+    auto equal_func = [&func](std::reference_wrapper<const T> lhs,
+                              std::reference_wrapper<const T> rhs) -> bool {
+        return (func(lhs.get()) == func(rhs.get()));
+    };
+    FarLib::FarVector<T> ret;
+    return get_col_unique_values_impl<alg, T>(name, std::forward<decltype(hash_func)>(hash_func),
+                                              std::forward<decltype(equal_func)>(equal_func));
+}
+
+template <typename I, typename H>
+template <Algorithm alg, typename T, typename HASH_F, typename EQUAL_F>
+FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values_impl(const char* name,
+                                                                 HASH_F&& hash_func,
+                                                                 EQUAL_F&& equal_func) const
+{
+    using namespace FarLib::cache;
+    using namespace FarLib;
+    const ColumnVecType<T>& vec = get_column<T>(name);
+
+    std::unordered_set<typename std::reference_wrapper<T>::type, HASH_F, EQUAL_F> table(
+        vec.size(), hash_func, equal_func);
     bool counted_nan = false;
     FarLib::FarVector<T> result;
 
     result.reserve(vec.size());
-    // TODO cannot use multithread for std set
-    if constexpr (alg == DEFAULT) {
-        RootDereferenceScope scope;
-        ON_MISS_BEGIN
-        ON_MISS_END
-        for (size_t i = 0; i < vec.size(); i++) {
-            auto citer = *(vec.at(i, scope, __on_miss__));
-            if (_is_nan<T>(citer) && !counted_nan) {
-                counted_nan = true;
-                result.push_back(_get_nan<T>(), scope);
-                continue;
-            }
-
-            const auto insert_ret = table.emplace(std::ref(citer));
-
-            if (insert_ret.second) result.push_back(citer, scope);
-        }
-    } else if constexpr (alg == UTHREAD) {
-        assert(uthread::get_worker_count() == 1);
-        const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
-        const size_t block      = (vec.size() + thread_cnt - 1) / thread_cnt;
-        uthread::parallel_for_with_scope<1>(
-            thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
-                ON_MISS_BEGIN
-                uthread::yield();
-                ON_MISS_END
-                using it_t = decltype(vec.clbegin());
-                struct Scope : public DereferenceScope {
-                    it_t it;
-
-                    void pin() const override
-                    {
-                        it.pin();
-                    }
-
-                    void unpin() const override
-                    {
-                        it.unpin();
-                    }
-
-                    Scope(DereferenceScope* scope) : DereferenceScope(scope) {}
-                } scp(&scope);
-                const size_t idx_start = i * block;
-                const size_t idx_end   = std::min(idx_start + block, vec.size());
-                scp.it                 = vec.get_const_lite_iter(idx_start, scp, __on_miss__);
-                for (size_t idx = idx_start; idx < idx_end; idx++, scp.it.next(scp, __on_miss__)) {
-                    auto citer = *(scp.it);
-                    if (_is_nan<T>(citer) && !counted_nan) {
-                        counted_nan = true;
-                        result.push_back(_get_nan<T>(), scp);
-                        continue;
-                    }
-
-                    const auto insert_ret = table.emplace(std::ref(citer));
-
-                    if (insert_ret.second) result.push_back(citer, scp);
+    perf_profile([&]() {
+        if constexpr (alg == DEFAULT) {
+            RootDereferenceScope scope;
+            ON_MISS_BEGIN
+            ON_MISS_END
+            for (size_t i = 0; i < vec.size(); i++) {
+                auto citer = *(vec.at(i, scope, __on_miss__));
+                if (_is_nan<T>(citer) && !counted_nan) {
+                    counted_nan = true;
+                    result.push_back(_get_nan<T>(), scope);
+                    continue;
                 }
-            });
-    } else if constexpr (alg == PREFETCH || alg == PARAROUTINE) {
-        bool counted_nan = false;
-        RootDereferenceScope scope;
-        auto citer_it = vec.clbegin(scope);
-        for (size_t i = 0; i < vec.size(); i++, citer_it.next(scope)) {
-            auto& citer = *citer_it;
-            if (_is_nan<T>(citer) && !counted_nan) {
-                counted_nan = true;
-                result.push_back(_get_nan<T>(), scope);
+
+                const auto insert_ret = table.emplace(std::ref(citer));
+
+                if (insert_ret.second) result.push_back(citer, scope);
             }
-            const auto insert_ret = table.emplace(std::ref(citer));
-            if (insert_ret.second) {
-                result.push_back(citer, scope);
+        } else if constexpr (alg == UTHREAD) {
+            assert(uthread::get_worker_count() == 1);
+            const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
+            const size_t block      = (vec.size() + thread_cnt - 1) / thread_cnt;
+            std::vector<decltype(table)> uthread_tables;
+            for (size_t i = 0; i < thread_cnt; i++) {
+                uthread_tables.emplace_back(vec.size(), hash_func, equal_func);
             }
+            uthread::parallel_for_with_scope<1>(
+                thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
+                    auto& u_table = uthread_tables[i];
+                    ON_MISS_BEGIN
+                    uthread::yield();
+                    ON_MISS_END
+                    using it_t = decltype(vec.clbegin());
+                    struct Scope : public DereferenceScope {
+                        it_t it;
+
+                        void pin() const override
+                        {
+                            it.pin();
+                        }
+
+                        void unpin() const override
+                        {
+                            it.unpin();
+                        }
+
+                        Scope(DereferenceScope* scope) : DereferenceScope(scope) {}
+                    } scp(&scope);
+                    const size_t idx_start = i * block;
+                    const size_t idx_end   = std::min(idx_start + block, vec.size());
+                    scp.it                 = vec.get_const_lite_iter(idx_start, scp, __on_miss__);
+                    for (size_t idx = idx_start; idx < idx_end;
+                         idx++, scp.it.next(scp, __on_miss__)) {
+                        auto citer = *(scp.it);
+                        if (_is_nan<T>(citer) && !counted_nan) {
+                            counted_nan = true;
+                            u_table.emplace(_get_nan<T>());
+                            continue;
+                        }
+                        u_table.emplace(std::ref(citer));
+                    }
+                });
+            for (auto& s : uthread_tables) {
+                table.merge(s);
+            }
+            std::vector<T> std_result(table.begin(), table.end());
+            result.resize(table.size());
+            const size_t block_fill = (table.size() + thread_cnt - 1) / thread_cnt;
+            uthread::parallel_for_with_scope<1>(
+                thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
+                    ON_MISS_BEGIN
+                    uthread::yield();
+                    ON_MISS_END
+                    using res_it_t = decltype(result.lbegin());
+
+                    struct Scope : public DereferenceScope {
+                        res_it_t res_it;
+                        void pin() const override
+                        {
+                            res_it.pin();
+                        }
+
+                        void unpin() const override
+                        {
+                            res_it.unpin();
+                        }
+
+                        void next(__DMH__)
+                        {
+                            res_it.next(*this, __on_miss__);
+                        }
+
+                        Scope(DereferenceScope* scope) : DereferenceScope(scope) {}
+                    } scp(&scope);
+                    const size_t idx_start = i * block_fill;
+                    const size_t idx_end   = std::min(result.size(), idx_start + block_fill);
+                    auto std_res_it        = std_result.cbegin() + idx_start;
+                    scp.res_it             = result.get_lite_iter(idx_start, scp, __on_miss__);
+                    for (size_t idx = idx_start; idx < idx_end;
+                         idx++, scp.next(__on_miss__), std_res_it++) {
+                        *(scp.res_it) = *std_res_it;
+                    }
+                });
+        } else if constexpr (alg == PREFETCH || alg == PARAROUTINE) {
+            bool counted_nan = false;
+            RootDereferenceScope scope;
+            auto citer_it = vec.clbegin(scope);
+            for (size_t i = 0; i < vec.size(); i++, citer_it.next(scope)) {
+                auto& citer = *citer_it;
+                if (_is_nan<T>(citer) && !counted_nan) {
+                    counted_nan = true;
+                    result.push_back(_get_nan<T>(), scope);
+                }
+                const auto insert_ret = table.emplace(std::ref(citer));
+                if (insert_ret.second) {
+                    result.push_back(citer, scope);
+                }
+            }
+        } else {
+            ERROR("algorithm dont exist");
         }
-    } else {
-        ERROR("algorithm dont exist");
-    }
+    }).print();
     return (result);
 }
-
 // ----------------------------------------------------------------------------
 
 template <typename I, typename H>
@@ -1061,12 +1132,13 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
             // only available if index = [0...idx_s - 1]
             const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
             const size_t block      = (idx_s + thread_cnt - 1) / thread_cnt;
+            std::vector<FarVector<size_t>> uthread_indices(thread_cnt);
             uthread::parallel_for_with_scope<1>(
                 thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
                     ON_MISS_BEGIN
                     uthread::yield();
                     ON_MISS_END
-                    // TODO another version for general usage
+                    auto& u_indices        = uthread_indices[i];
                     const size_t idx_start = i * block;
                     const size_t idx_end   = std::min(idx_start + block, idx_s);
                     if constexpr (trivial_opt) {
@@ -1090,7 +1162,7 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
                         for (size_t idx = idx_start; idx < idx_end;
                              idx++, scp.vec_it.next(scp, __on_miss__)) {
                             if (sel_functor(idx, *(scp.vec_it))) {
-                                col_indices.push_back(idx, scope);
+                                u_indices.push_back(idx, scp);
                             }
                         }
                     } else {
@@ -1122,9 +1194,58 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
                         scp.idx_it = indices_.get_const_lite_iter(idx_start, scp, __on_miss__);
                         for (size_t idx = idx_start; idx < idx_end; idx++, scp.next(__on_miss__)) {
                             if (sel_functor(*(scp.idx_it), *(scp.vec_it))) {
-                                col_indices.push_back(idx, scope);
+                                u_indices.push_back(idx, scp);
                             }
                         }
+                    }
+                });
+            std::vector<size_t> sizes(thread_cnt + 1);
+            sizes[0] = 0;
+            for (size_t i = 1; i <= thread_cnt; i++) {
+                sizes[i] = sizes[i - 1] + uthread_indices[i - 1].size();
+            }
+            size_t sum_size = sizes[thread_cnt];
+            col_indices.resize(sum_size);
+            uthread::parallel_for_with_scope<1>(
+                thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
+                    auto& u_indices = uthread_indices[i];
+                    using u_it_t    = decltype(u_indices.clbegin());
+                    using it_t      = decltype(col_indices.lbegin());
+
+                    ON_MISS_BEGIN
+                    uthread::yield();
+                    ON_MISS_END
+                    struct Scope : public DereferenceScope {
+                        u_it_t u_it;
+                        it_t it;
+
+                        void pin() const override
+                        {
+                            u_it.pin();
+                            it.pin();
+                        }
+
+                        void unpin() const override
+                        {
+                            u_it.unpin();
+                            it.unpin();
+                        }
+
+                        void next(__DMH__)
+                        {
+                            u_it.next(*this, __on_miss__);
+                            it.next(*this, __on_miss__);
+                        }
+
+                        Scope(DereferenceScope* scope) : DereferenceScope(scope) {}
+                    } scp(&scope);
+
+                    const size_t idx_start = sizes[i];
+                    const size_t idx_end   = sizes[i + 1];
+                    scp.u_it               = u_indices.clbegin(scp, __on_miss__);
+                    scp.it                 = col_indices.get_lite_iter(idx_start, scp, __on_miss__);
+                    for (size_t idx = idx_start; idx < idx_end; idx++, scp.next(__on_miss__)) {
+                        *(scp.it) = *(scp.u_it);
                     }
                 });
         } else if constexpr (alg == PREFETCH || alg == PARAROUTINE) {
