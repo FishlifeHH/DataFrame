@@ -1202,12 +1202,12 @@ class LIBRARY_API DataFrame : public ThreadGranularity
     [[nodiscard]] FarLib::FarVector<T> get_col_unique_values(const char* name) const;
 
     template <Algorithm alg, typename T, typename F>
-    [[nodiscard]] FarLib::FarVector<T> get_col_unique_values(const char* name, F&& func) const;
+    [[nodiscard]] FarLib::FarVector<T> get_col_unique_values(const char* name, F&& func, size_t uthread_cnt) const;
 
     template <Algorithm alg, typename T, typename HASH_F, typename EQUAL_F>
     [[nodiscard]] FarLib::FarVector<T> get_col_unique_values_impl(const char* name,
                                                                   HASH_F&& hash_func,
-                                                                  EQUAL_F&& equal_func) const;
+                                                                  EQUAL_F&& equal_func, size_t uthread_cnt) const;
 
     // It returns a DataFrame (including the index and data columns)
     // containing the data from index begin to index end.

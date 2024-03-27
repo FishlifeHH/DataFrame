@@ -163,6 +163,7 @@ template <typename I, typename H>
 template <Algorithm alg, typename T>
 FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values(const char* name) const
 {
+    using namespace FarLib;
     auto hash_func = [](std::reference_wrapper<const T> v) -> std::size_t {
         return (std::hash<T>{}(v.get()));
     };
@@ -171,12 +172,12 @@ FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values(const char* name) co
         return (lhs.get() == rhs.get());
     };
     return get_col_unique_values_impl<alg, T>(name, std::forward<decltype(hash_func)>(hash_func),
-                                              std::forward<decltype(equal_func)>(equal_func));
+                                              std::forward<decltype(equal_func)>(equal_func), uthread::get_worker_count() * UTH_FACTOR);
 }
 
 template <typename I, typename H>
 template <Algorithm alg, typename T, typename F>
-FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values(const char* name, F&& func) const
+FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values(const char* name, F&& func, size_t uthread_cnt) const
 {
     auto hash_func = [&func](std::reference_wrapper<const T> v) -> std::size_t {
         return (std::hash<size_t>{}(func(v.get())));
@@ -187,14 +188,14 @@ FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values(const char* name, F&
     };
     FarLib::FarVector<T> ret;
     return get_col_unique_values_impl<alg, T>(name, std::forward<decltype(hash_func)>(hash_func),
-                                              std::forward<decltype(equal_func)>(equal_func));
+                                              std::forward<decltype(equal_func)>(equal_func), uthread_cnt);
 }
 
 template <typename I, typename H>
 template <Algorithm alg, typename T, typename HASH_F, typename EQUAL_F>
 FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values_impl(const char* name,
                                                                  HASH_F&& hash_func,
-                                                                 EQUAL_F&& equal_func) const
+                                                                 EQUAL_F&& equal_func, size_t uthread_cnt) const
 {
     using namespace FarLib::cache;
     using namespace FarLib;
@@ -206,7 +207,7 @@ FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values_impl(const char* nam
     FarLib::FarVector<T> result;
 
     result.reserve(vec.size());
-    perf_profile([&]() {
+    // perf_profile([&]() {
         if constexpr (alg == DEFAULT) {
             RootDereferenceScope scope;
             ON_MISS_BEGIN
@@ -224,12 +225,11 @@ FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values_impl(const char* nam
                 if (insert_ret.second) result.push_back(citer, scope);
             }
         } else if constexpr (alg == UTHREAD) {
-            assert(uthread::get_worker_count() == 1);
-            const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
+            const size_t thread_cnt = uthread_cnt;
             const size_t block      = (vec.size() + thread_cnt - 1) / thread_cnt;
             std::vector<decltype(table)> uthread_tables;
             for (size_t i = 0; i < thread_cnt; i++) {
-                uthread_tables.emplace_back(vec.size(), hash_func, equal_func);
+                uthread_tables.emplace_back(block, hash_func, equal_func);
             }
             uthread::parallel_for_with_scope<1>(
                 thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
@@ -326,7 +326,7 @@ FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values_impl(const char* nam
         } else {
             ERROR("algorithm dont exist");
         }
-    }).print();
+    // }).print();
     return (result);
 }
 // ----------------------------------------------------------------------------

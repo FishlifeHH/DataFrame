@@ -20,7 +20,7 @@
 #include "utils/perf.hpp"
 // #define STANDALONE
 // simple: ~74M, full: ~16G
-// #define SIMPLE_BENCH
+#define SIMPLE_BENCH
 
 #ifdef STANDALONE
 #include "rdma/server.hpp"
@@ -40,10 +40,10 @@ StdDataFrame<uint64_t> load_data()
 #ifdef SIMPLE_BENCH
     // const char* file_path =
     // "/home/huanghong/mem_parallel/motivation/FarLib/build/very_simple.csv";
-    const char* file_path = "/mnt/simple.csv";
+    const char* file_path = "/mnt/ssd/huanghong/data/simple.csv";
 
 #else
-    const char* file_path = "/mnt/all.csv";
+    const char* file_path = "/mnt/ssd/huanghong/data/all.csv";
 #endif
     return read_csv<-1, int, SimpleTime, SimpleTime, int, double, double, double, int, char, double,
                     double, int, double, double, double, double, double, double, double>(
@@ -54,7 +54,7 @@ StdDataFrame<uint64_t> load_data()
 }
 
 template <Algorithm alg = DEFAULT_ALG>
-void print_hours_and_unique(StdDataFrame<uint64_t>& df)
+void print_hours_and_unique(StdDataFrame<uint64_t>& df, size_t uthread_cnt)
 {
     std::cout << "print_hours_and_unique()" << std::endl;
     std::cout << "Number of hours in the train dataset: "
@@ -70,8 +70,8 @@ void print_hours_and_unique(StdDataFrame<uint64_t>& df)
                                days += day_per_month[i];
                            }
                            days += st.day_;
-                           return days * 24 + st.hour_;
-                       })
+                           return days * 24 * 60 + st.hour_ * 60 + st.min_;
+                       }, uthread_cnt)
                      .size()
               << std::endl;
     std::cout << std::endl;
@@ -79,8 +79,11 @@ void print_hours_and_unique(StdDataFrame<uint64_t>& df)
 
 int main(int argc, const char* argv[])
 {
+    perf_init();
+    perf_profile([&] {
     /* config setting */
     Configure config;
+    size_t uthread_cnt;
 #ifdef STANDALONE
     config.server_addr = "127.0.0.1";
     config.server_port = "1234";
@@ -95,13 +98,16 @@ int main(int argc, const char* argv[])
 #endif
     config.evict_batch_size = 64 * 1024;
 #else
-    if (argc != 2 && argc != 3) {
-        std::cout << "usage: " << argv[0] << " <configure file> [client buffer size]" << std::endl;
+    if (argc != 2 && argc != 4) {
+        std::cout << "usage: " << argv[0] << " <configure file> [<core num> <uthread num>]" << std::endl;
         return -1;
     }
     config.from_file(argv[1]);
-    if (argc == 3) {
-        config.client_buffer_size = std::stoul(argv[2]);
+    if (argc == 4) {
+        config.max_thread_cnt = std::stoul(argv[2]);
+        uthread_cnt = std::stoul(argv[3]);
+    } else {
+        uthread_cnt = config.max_thread_cnt * UTH_FACTOR;
     }
 #endif
 
@@ -111,20 +117,23 @@ int main(int argc, const char* argv[])
     std::thread server_thread([&server] { server.start(); });
     std::this_thread::sleep_for(1s);
 #endif
+
     FarLib::runtime_init(config);
-    srand(time(NULL));
     /* test */
     std::chrono::time_point<std::chrono::steady_clock> times[10];
+
     {
         FarLib::Cache::init_profile();
-        perf_init();
         auto df = load_data();
-        print_hours_and_unique(df);
+        print_hours_and_unique(df, uthread_cnt);
     }
     /* destroy runtime */
     FarLib::runtime_destroy();
 #ifdef STANDALONE
     server_thread.join();
 #endif
+    return 0;
+    }).print();
+
     return 0;
 }
