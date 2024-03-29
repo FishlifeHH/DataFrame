@@ -92,10 +92,10 @@ void print_passage_counts_by_vendor_id(StdDataFrame<uint64_t>& df, int vendor_id
     auto start = get_cycles();
     decltype(df.get_data_by_sel<alg, trivial_opt, int, decltype(sel_vendor_functor), int,
                                 SimpleTime, double, char>("VendorID", sel_vendor_functor)) sel_df;
-    // perf_profile([&]() {
+    perf_profile([&]() {
     sel_df = df.get_data_by_sel<alg, trivial_opt, int, decltype(sel_vendor_functor), int,
                                 SimpleTime, double, char>("VendorID", sel_vendor_functor);
-    // }).print();
+    });
     auto end = get_cycles();
     std::cout << "sel df get: " << end - start << std::endl;
     auto& passage_count_vec = sel_df.template get_column<int>("passenger_count");
@@ -835,7 +835,6 @@ int main(int argc, const char* argv[])
     std::chrono::time_point<std::chrono::steady_clock> times[10];
     {
         FarLib::Cache::init_profile();
-        perf_init();
         auto df  = load_data();
         times[0] = std::chrono::steady_clock::now();
         print_number_vendor_ids_and_unique(df);

@@ -35,6 +35,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <functional>
 #include <random>
 #include <unordered_set>
+#include <unordered_map>
+#include <mutex>
 #include <vector>
 
 #include "async/scoped_inline_task.hpp"
@@ -201,39 +203,39 @@ FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values_impl(const char* nam
     using namespace FarLib;
     const ColumnVecType<T>& vec = get_column<T>(name);
 
-    std::unordered_set<typename std::reference_wrapper<T>::type, HASH_F, EQUAL_F> table(
-        vec.size(), hash_func, equal_func);
+    std::unordered_map<typename std::reference_wrapper<T>::type, size_t, HASH_F, EQUAL_F> table(0, hash_func, equal_func);
     bool counted_nan = false;
     FarLib::FarVector<T> result;
 
     result.reserve(vec.size());
-    // perf_profile([&]() {
+    perf_profile([&]() {
         if constexpr (alg == DEFAULT) {
-            RootDereferenceScope scope;
-            ON_MISS_BEGIN
-            ON_MISS_END
-            for (size_t i = 0; i < vec.size(); i++) {
-                auto citer = *(vec.at(i, scope, __on_miss__));
-                if (_is_nan<T>(citer) && !counted_nan) {
-                    counted_nan = true;
-                    result.push_back(_get_nan<T>(), scope);
-                    continue;
-                }
+            // RootDereferenceScope scope;
+            // ON_MISS_BEGIN
+            // ON_MISS_END
+            // for (size_t i = 0; i < vec.size(); i++) {
+            //     auto citer = *(vec.at(i, scope, __on_miss__));
+            //     if (_is_nan<T>(citer) && !counted_nan) {
+            //         counted_nan = true;
+            //         result.push_back(_get_nan<T>(), scope);
+            //         continue;
+            //     }
 
-                const auto insert_ret = table.emplace(std::ref(citer));
+            //     const auto insert_ret = table.emplace(std::ref(citer));
 
-                if (insert_ret.second) result.push_back(citer, scope);
-            }
+            //     if (insert_ret.second) result.push_back(citer, scope);
+            // }
         } else if constexpr (alg == UTHREAD) {
             const size_t thread_cnt = uthread_cnt;
             const size_t block      = (vec.size() + thread_cnt - 1) / thread_cnt;
-            std::vector<decltype(table)> uthread_tables;
-            for (size_t i = 0; i < thread_cnt; i++) {
-                uthread_tables.emplace_back(block, hash_func, equal_func);
+            using table_t = decltype(table);
+            std::vector<table_t> uthread_tables;
+            for (size_t i = 0;i < thread_cnt;i++) {
+                uthread_tables.emplace_back(0, hash_func, equal_func);
             }
             uthread::parallel_for_with_scope<1>(
                 thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
-                    auto& u_table = uthread_tables[i];
+                    table_t u_table(0, hash_func, equal_func);
                     ON_MISS_BEGIN
                     uthread::yield();
                     ON_MISS_END
@@ -261,16 +263,17 @@ FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values_impl(const char* nam
                         auto citer = *(scp.it);
                         if (_is_nan<T>(citer) && !counted_nan) {
                             counted_nan = true;
-                            u_table.emplace(_get_nan<T>());
+                            u_table[_get_nan<T>()]++;
                             continue;
                         }
-                        u_table.emplace(std::ref(citer));
+                        u_table[citer]++;
                     }
+                    new (&(uthread_tables[i])) table_t(std::move(u_table));
                 });
             for (auto& s : uthread_tables) {
                 table.merge(s);
             }
-            std::vector<T> std_result(table.begin(), table.end());
+            std::vector<std::pair<T, size_t>> std_result(table.begin(), table.end());
             result.resize(table.size());
             const size_t block_fill = (table.size() + thread_cnt - 1) / thread_cnt;
             uthread::parallel_for_with_scope<1>(
@@ -305,28 +308,28 @@ FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values_impl(const char* nam
                     scp.res_it             = result.get_lite_iter(idx_start, scp, __on_miss__);
                     for (size_t idx = idx_start; idx < idx_end;
                          idx++, scp.next(__on_miss__), std_res_it++) {
-                        *(scp.res_it) = *std_res_it;
+                        *(scp.res_it) = std_res_it->first;
                     }
                 });
         } else if constexpr (alg == PREFETCH || alg == PARAROUTINE) {
-            bool counted_nan = false;
-            RootDereferenceScope scope;
-            auto citer_it = vec.clbegin(scope);
-            for (size_t i = 0; i < vec.size(); i++, citer_it.next(scope)) {
-                auto& citer = *citer_it;
-                if (_is_nan<T>(citer) && !counted_nan) {
-                    counted_nan = true;
-                    result.push_back(_get_nan<T>(), scope);
-                }
-                const auto insert_ret = table.emplace(std::ref(citer));
-                if (insert_ret.second) {
-                    result.push_back(citer, scope);
-                }
-            }
+            // bool counted_nan = false;
+            // RootDereferenceScope scope;
+            // auto citer_it = vec.clbegin(scope);
+            // for (size_t i = 0; i < vec.size(); i++, citer_it.next(scope)) {
+            //     auto& citer = *citer_it;
+            //     if (_is_nan<T>(citer) && !counted_nan) {
+            //         counted_nan = true;
+            //         result.push_back(_get_nan<T>(), scope);
+            //     }
+            //     const auto insert_ret = table.emplace(std::ref(citer));
+            //     if (insert_ret.second) {
+            //         result.push_back(citer, scope);
+            //     }
+            // }
         } else {
             ERROR("algorithm dont exist");
         }
-    // }).print();
+    });
     return (result);
 }
 // ----------------------------------------------------------------------------
@@ -1294,7 +1297,7 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
         } else {
             ERROR("algorithm dont exist");
         }
-    }).print();
+    });
     auto end = get_cycles();
     std::cout << "col indices get: " << end - start << std::endl << std::endl;
 
@@ -1303,12 +1306,12 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
     IndexVecType new_index;
     perf_profile([&]() {
         new_index = indices_.template copy_data_by_idx<alg>(col_indices);
-    }).print();
+    });
     end = get_cycles();
     std::cout << "new index fill: " << end - start << std::endl << std::endl;
 
     start = get_cycles();
-    perf_profile([&]() { df.load_index(std::move(new_index)); }).print();
+    perf_profile([&]() { df.load_index(std::move(new_index)); });
     end = get_cycles();
     std::cout << "load index: " << end - start << std::endl << std::endl;
     for (auto col_citer : column_tb_) {
@@ -1317,7 +1320,7 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
             alg_sel_load_functor_<alg, size_type, Ts...> functor(col_citer.first.c_str(),
                                                                  col_indices, idx_s, df);
             data_[col_citer.second].change(functor);
-        }).print();
+        });
         auto end = get_cycles();
         std::cout << "alg_sel_load_functor: " << end - start << std::endl << std::endl;
     }

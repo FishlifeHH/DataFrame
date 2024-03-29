@@ -20,7 +20,7 @@
 #include "utils/perf.hpp"
 // #define STANDALONE
 // simple: ~74M, full: ~16G
-#define SIMPLE_BENCH
+// #define SIMPLE_BENCH
 
 #ifdef STANDALONE
 #include "rdma/server.hpp"
@@ -59,8 +59,7 @@ void print_hours_and_unique(StdDataFrame<uint64_t>& df, size_t uthread_cnt)
     std::cout << "print_hours_and_unique()" << std::endl;
     std::cout << "Number of hours in the train dataset: "
               << df.get_column<SimpleTime>("tpep_pickup_datetime").size() << std::endl;
-    std::cout << "Number of unique hours in the train dataset:"
-              << df.get_col_unique_values<alg, SimpleTime>(
+    size_t siz = df.get_col_unique_values<alg, SimpleTime>(
                        "tpep_pickup_datetime",
                        [](const SimpleTime& st) {
                            constexpr uint64_t day_per_month[12] = {31, 28, 31, 30, 31, 30,
@@ -70,17 +69,17 @@ void print_hours_and_unique(StdDataFrame<uint64_t>& df, size_t uthread_cnt)
                                days += day_per_month[i];
                            }
                            days += st.day_;
-                           return days * 24 * 60 + st.hour_ * 60 + st.min_;
+                           return days * 24 + st.hour_;
                        }, uthread_cnt)
-                     .size()
+                     .size();
+    std::cout << "Number of unique hours in the train dataset:"
+              << siz
               << std::endl;
     std::cout << std::endl;
 }
 
 int main(int argc, const char* argv[])
 {
-    perf_init();
-    perf_profile([&] {
     /* config setting */
     Configure config;
     size_t uthread_cnt;
@@ -132,8 +131,5 @@ int main(int argc, const char* argv[])
 #ifdef STANDALONE
     server_thread.join();
 #endif
-    return 0;
-    }).print();
-
     return 0;
 }
