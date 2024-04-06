@@ -34,6 +34,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <cmath>
 #include <functional>
 #include <random>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -172,12 +173,14 @@ FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values(const char* name) co
         return (lhs.get() == rhs.get());
     };
     return get_col_unique_values_impl<alg, T>(name, std::forward<decltype(hash_func)>(hash_func),
-                                              std::forward<decltype(equal_func)>(equal_func), uthread::get_worker_count() * UTH_FACTOR);
+                                              std::forward<decltype(equal_func)>(equal_func),
+                                              uthread::get_worker_count() * UTH_FACTOR);
 }
 
 template <typename I, typename H>
 template <Algorithm alg, typename T, typename F>
-FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values(const char* name, F&& func, size_t uthread_cnt) const
+FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values(const char* name, F&& func,
+                                                            size_t uthread_cnt) const
 {
     auto hash_func = [&func](std::reference_wrapper<const T> v) -> std::size_t {
         return (std::hash<size_t>{}(func(v.get())));
@@ -188,14 +191,55 @@ FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values(const char* name, F&
     };
     FarLib::FarVector<T> ret;
     return get_col_unique_values_impl<alg, T>(name, std::forward<decltype(hash_func)>(hash_func),
-                                              std::forward<decltype(equal_func)>(equal_func), uthread_cnt);
+                                              std::forward<decltype(equal_func)>(equal_func),
+                                              uthread_cnt);
+}
+
+template <typename I, typename H>
+template <Algorithm alg, typename T, typename U, typename F>
+std::unordered_map<U, size_t> DataFrame<I, H>::get_column_elem_count(const char* name, F&& func,
+                                                                     size_t uthread_cnt) const
+{
+    using namespace FarLib::cache;
+    using namespace FarLib;
+    const ColumnVecType<T>& vec = get_column<T>(name);
+    std::cout << "vector memory occupied: " << vec.size() * sizeof(T) << std::endl;
+    using map_t = std::unordered_map<U, size_t>;
+    map_t mp;
+    profile::start_work();
+    perf_profile([&]() {
+        const size_t thread_cnt = uthread_cnt;
+        const size_t block      = (vec.size() + thread_cnt - 1) / thread_cnt;
+        std::vector<map_t> uthread_maps(thread_cnt);
+        for (auto& m : uthread_maps) {
+            m.reserve(10000);
+        }
+        uthread::parallel_for_with_scope<1>(
+            thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
+                profile::thread_start_work();
+                auto& u_map            = uthread_maps[i];
+                const size_t idx_start = i * block;
+                const size_t idx_end   = std::min(idx_start + block, vec.size());
+                vec.template for_each<alg>([&](const T& elem) { u_map[func(elem)]++; }, idx_start,
+                                           idx_end, scope);
+                profile::thread_end_work();
+                // std::cout << "thread time : " << profile::tlpd.work_cycles << std::endl;
+            });
+        for (auto& m : uthread_maps) {
+            // std::cout << "map size: " << m.size() << std::endl;
+            mp.merge(m);
+        }
+    }).print();
+    profile::end_work();
+    return mp;
 }
 
 template <typename I, typename H>
 template <Algorithm alg, typename T, typename HASH_F, typename EQUAL_F>
 FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values_impl(const char* name,
                                                                  HASH_F&& hash_func,
-                                                                 EQUAL_F&& equal_func, size_t uthread_cnt) const
+                                                                 EQUAL_F&& equal_func,
+                                                                 size_t uthread_cnt) const
 {
     using namespace FarLib::cache;
     using namespace FarLib;
@@ -207,7 +251,7 @@ FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values_impl(const char* nam
     FarLib::FarVector<T> result;
 
     result.reserve(vec.size());
-    // perf_profile([&]() {
+    perf_profile([&]() {
         if constexpr (alg == DEFAULT) {
             RootDereferenceScope scope;
             ON_MISS_BEGIN
@@ -271,7 +315,7 @@ FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values_impl(const char* nam
                 table.merge(s);
             }
             std::vector<T> std_result(table.begin(), table.end());
-            result.resize(table.size());
+            result.template resize<true>(table.size());
             const size_t block_fill = (table.size() + thread_cnt - 1) / thread_cnt;
             uthread::parallel_for_with_scope<1>(
                 thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
@@ -326,7 +370,7 @@ FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values_impl(const char* nam
         } else {
             ERROR("algorithm dont exist");
         }
-    // }).print();
+    });
     return (result);
 }
 // ----------------------------------------------------------------------------
@@ -1119,7 +1163,6 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
     const size_type col_s       = vec.size();
     FarLib::FarVector<size_type> col_indices;
     col_indices.reserve(idx_s / 2);
-    auto start = get_cycles();
     perf_profile([&]() {
         if constexpr (alg == DEFAULT) {
             for (size_type i = 0; i < col_s; ++i)
@@ -1295,31 +1338,20 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
             ERROR("algorithm dont exist");
         }
     }).print();
-    auto end = get_cycles();
-    std::cout << "col indices get: " << end - start << std::endl << std::endl;
 
     DataFrame df;
-    start = get_cycles();
     IndexVecType new_index;
     perf_profile([&]() {
         new_index = indices_.template copy_data_by_idx<alg>(col_indices);
     }).print();
-    end = get_cycles();
-    std::cout << "new index fill: " << end - start << std::endl << std::endl;
 
-    start = get_cycles();
     perf_profile([&]() { df.load_index(std::move(new_index)); }).print();
-    end = get_cycles();
-    std::cout << "load index: " << end - start << std::endl << std::endl;
     for (auto col_citer : column_tb_) {
-        auto start = get_cycles();
         perf_profile([&]() {
             alg_sel_load_functor_<alg, size_type, Ts...> functor(col_citer.first.c_str(),
                                                                  col_indices, idx_s, df);
             data_[col_citer.second].change(functor);
         }).print();
-        auto end = get_cycles();
-        std::cout << "alg_sel_load_functor: " << end - start << std::endl << std::endl;
     }
 
     return (df);

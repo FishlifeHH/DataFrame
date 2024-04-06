@@ -684,17 +684,10 @@ void DataFrame<I, H>::alg_sel_load_functor_<alg, IT, Ts...>::operator()(FarLib::
     using namespace FarLib;
     using namespace FarLib::cache;
     using ValueType = typename FarLib::FarVector<T>::value_type;
-    auto start      = get_cycles();
 
     auto new_col = vec.template copy_data_by_idx<alg>(sel_indices);
-    auto end     = get_cycles();
-    std::cout << "new col get: " << end - start << std::endl;
-
-    start = get_cycles();
 
     df.load_column<alg, T>(name, std::move(new_col), nan_policy::dont_pad_with_nans);
-    end = get_cycles();
-    std::cout << "load column: " << end - start << std::endl;
 
     return;
 }
