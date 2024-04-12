@@ -46,18 +46,29 @@ HeteroVector::WrappedVector<T>& DataFrame<I, H>::create_column(const char* name)
 {
     static_assert(std::is_base_of<HeteroVector, DataVec>::value,
                   "Only a StdDataFrame can call create_column()");
-
+    // auto start = get_cycles();
     if (!::strcmp(name, DF_INDEX_COL_NAME))
         throw DataFrameError(
             "DataFrame::create_column(): ERROR: "
             "Data column name cannot be 'INDEX'");
-
+    // auto estart  = get_cycles();
+    // auto destart = get_cycles();
     data_.emplace_back(DataVec());
+    // auto dend    = get_cycles();
+    // auto ctstart = get_cycles();
     column_tb_.emplace(name, data_.size() - 1);
-
+    // auto ctend = get_cycles();
+    // auto eend  = get_cycles();
+    // std::cout << "data emplace: " << dend - destart << std::endl;
+    // std::cout << "ct emplace: " << ctend - ctstart << std::endl;
+    // std::cout << "emplace: " << eend - estart << std::endl;
     DataVec& hv = data_.back();
+    // auto slock  = get_cycles();
     const SpinGuard guard(lock_);
-
+    // auto elock = get_cycles();
+    // std::cout << "lock: " << elock - slock << std::endl;
+    // auto end = get_cycles();
+    // std::cout << "create column: " << end - start << std::endl;
     return (hv.template get_vector<T>());
 }
 
@@ -394,9 +405,11 @@ typename DataFrame<I, H>::size_type DataFrame<I, H>::load_column(const char* nam
     const auto iter                         = column_tb_.find(name);
     HeteroVector::WrappedVector<T>* vec_ptr = nullptr;
 
-    if (iter == column_tb_.end())
+    if (iter == column_tb_.end()) {
+        // std::cout << "create one" << std::endl;
         vec_ptr = &(create_column<T>(name));
-    else {
+    } else {
+        // std::cout << "has existed" << std::endl;
         DataVec& hv = data_[iter->second];
         const SpinGuard guard(lock_);
 
@@ -412,6 +425,7 @@ template <Algorithm alg, typename T>
 typename DataFrame<I, H>::size_type DataFrame<I, H>::load_column(
     const char* name, typename H::WrappedVector<T>&& data, nan_policy padding)
 {
+    auto sstart = get_cycles();
     using namespace FarLib;
     using namespace FarLib::cache;
     const size_type idx_s  = indices_.size();
@@ -432,7 +446,7 @@ typename DataFrame<I, H>::size_type DataFrame<I, H>::load_column(
     }
 
     size_type ret_cnt = data_s;
-
+    // auto pstart       = get_cycles();
     if (padding == nan_policy::pad_with_nans && data_s < idx_s) {
         if constexpr (alg == DEFAULT) {
             RootDereferenceScope scope;
@@ -440,15 +454,12 @@ typename DataFrame<I, H>::size_type DataFrame<I, H>::load_column(
                 data.push_back(std::move(_get_nan<T>()), scope);
                 ret_cnt += 1;
             }
-        } else if constexpr (alg == UTHREAD) {
+        } else {
             data.resize(idx_s);
             const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
             const size_t block      = (idx_s - data_s + thread_cnt - 1) / thread_cnt;
             uthread::parallel_for_with_scope<1>(
                 thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
-                    ON_MISS_BEGIN
-                    uthread::yield();
-                    ON_MISS_END
                     using data_it_t = decltype(data.lbegin());
                     struct Scope : public DereferenceScope {
                         data_it_t data_it;
@@ -468,36 +479,51 @@ typename DataFrame<I, H>::size_type DataFrame<I, H>::load_column(
                     } scp(&scope);
                     const size_t idx_start = i * block;
                     const size_t idx_end   = std::min(idx_start + block, idx_s - data_s);
-                    scp.data_it            = data.get_lite_iter(data_s, scp, __on_miss__);
-                    for (size_t idx = idx_start; idx < idx_end;
-                         idx++, scp.data_it.next(scp, __on_miss__)) {
-                        *(scp.data_it) = _get_nan<T>();
+                    if constexpr (alg == UTHREAD) {
+                        ON_MISS_BEGIN
+                        uthread::yield();
+                        ON_MISS_END
+                        scp.data_it =
+                            data.get_lite_iter(data_s, scp, __on_miss__, idx_start, idx_end);
+                        for (size_t idx = idx_start; idx < idx_end;
+                             idx++, scp.data_it.next(scp, __on_miss__)) {
+                            *(scp.data_it) = _get_nan<T>();
+                        }
+                    } else if constexpr (alg == PREFETCH || alg == PARAROUTINE) {
+                        scp.data_it = data.get_lite_iter(data_s, scp, idx_start, idx_end);
+                        for (size_t idx = idx_start; idx < idx_end; idx++, scp.data_it.next(scp)) {
+                            *(scp.data_it) = _get_nan<T>();
+                        }
+                    } else {
+                        ERROR("alg dont exist");
                     }
                 });
-        } else if constexpr (alg == PREFETCH || alg == PARAROUTINE) {
-            data.resize(idx_s);
-            RootDereferenceScope scope;
-            auto it = data.lbegin(scope).nextn(data_s, scope);
-            for (size_t i = 0; i < idx_s - data_s; i++, it.next(scope)) {
-                *it = _get_nan<T>();
-            }
-        } else {
-            ERROR("alg dont exist");
         }
     }
+    // auto pend = get_cycles();
+    // std::cout << "padding: " << pend - pstart << std::endl;
     const auto iter                         = column_tb_.find(name);
     HeteroVector::WrappedVector<T>* vec_ptr = nullptr;
 
-    if (iter == column_tb_.end())
+    // auto cstart = get_cycles();
+    if (iter == column_tb_.end()) {
+        // std::cout << "create one" << std::endl;
         vec_ptr = &(create_column<T>(name));
-    else {
+    } else {
+        // std::cout << "has one" << std::endl;
         DataVec& hv = data_[iter->second];
         const SpinGuard guard(lock_);
 
         vec_ptr = &(hv.template get_vector<T>());
     }
-
-    *vec_ptr = data;
+    // auto cend = get_cycles();
+    // std::cout << "get vec ptr: " << cend - cstart << std::endl;
+    // auto start = get_cycles();
+    *vec_ptr = std::move(data);
+    // auto end   = get_cycles();
+    // std::cout << "load column move: " << end - start << std::endl;
+    // auto ssend = get_cycles();
+    // std::cout << "load column: " << ssend - sstart << std::endl;
     return (idx_s - data_s);
 }
 

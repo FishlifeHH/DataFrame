@@ -52,8 +52,8 @@ struct HeteroVector {
     using size_type     = size_t;
 
     HeteroVector();
-    HeteroVector(const HeteroVector& that);
-    HeteroVector(HeteroVector&& that);
+    HeteroVector(const HeteroVector& that) noexcept;
+    HeteroVector(HeteroVector&& that) noexcept;
 
     ~HeteroVector()
     {
@@ -189,6 +189,12 @@ struct HeteroVector {
     inline const_reverse_iterator<T> rend() const noexcept
     {
         return (get_vector<T>().rend());
+    }
+
+    template <typename T>
+    static void clear_all_hvector()
+    {
+        vectors_<T>.clear();
     }
 
    private:

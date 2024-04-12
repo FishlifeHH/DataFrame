@@ -84,9 +84,16 @@ template <Algorithm alg = DEFAULT_ALG>
 void print_trip_distance_hist(StdDataFrame<uint64_t>& df, size_t uthread_cnt)
 {
     std::cout << "print_trip_distance_hist()" << std::endl;
-    std::unordered_map<size_t, size_t> hist_map = df.get_column_elem_count<alg, double, size_t>(
-        "trip_distance", [](double distance) -> size_t { return distance * 100; }, uthread_cnt);
+    auto start = std::chrono::high_resolution_clock::now();
+    std::unordered_map<size_t, size_t> hist_map;
+    perf_profile([&]() {
+        hist_map = df.get_column_elem_count<alg, double, size_t>(
+            "trip_distance", [](double distance) -> size_t { return distance * 100; }, uthread_cnt);
+    }).print();
 
+    auto end = std::chrono::high_resolution_clock::now();
+    auto d   = end - start;
+    std::cout << std::chrono::duration_cast<std::chrono::milliseconds>(d) << std::endl;
     std::cout << "hist size: " << hist_map.size() << std::endl;
     size_t min_dist = UINT64_MAX;
     size_t max_dist = 0;

@@ -103,160 +103,93 @@ static inline void _sort_by_sorted_index_copy_(FarLib::FarVector<T>& to_be_sorte
     using namespace FarLib::cache;
     FarLib::FarVector<T> result;
     result.template resize<true>(to_be_sorted.size());
-    if constexpr (alg == UTHREAD) {
-        const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
-        const size_t block      = (to_be_sorted.size() + thread_cnt - 1) / thread_cnt;
-        uthread::parallel_for_with_scope<1>(
-            thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
-                ON_MISS_BEGIN
-                uthread::yield();
-                ON_MISS_END
-                using idx_it_t        = decltype(sorting_idxs.clbegin());
-                using to_be_sort_it_t = decltype(to_be_sorted.clbegin());
-                using result_acc_t    = decltype(result.at_mut(0, scope, __on_miss__));
-                struct Scope : public DereferenceScope {
-                    idx_it_t idx_it;
-                    to_be_sort_it_t to_be_sort_it;
-                    result_acc_t result_acc;
+    const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
+    // aligned to group
+    const size_t block =
+        (sorting_idxs.groups_count() + thread_cnt - 1) / thread_cnt * sorting_idxs.GROUP_SIZE;
+    uthread::parallel_for_with_scope<1>(
+        thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
+            ON_MISS_BEGIN
+            uthread::yield();
+            ON_MISS_END
+            using idx_it_t        = decltype(sorting_idxs.clbegin());
+            using to_be_sort_it_t = decltype(to_be_sorted.clbegin());
+            using result_acc_t    = decltype(result.at_mut(0, scope, __on_miss__));
+            struct Scope : public DereferenceScope {
+                idx_it_t idx_it;
+                to_be_sort_it_t to_be_sort_it;
+                result_acc_t result_acc;
 
-                    void pin()
-                    {
-                        idx_it.pin();
-                        to_be_sort_it.pin();
-                        result_acc.pin();
-                    }
+                void pin()
+                {
+                    idx_it.pin();
+                    to_be_sort_it.pin();
+                    result_acc.pin();
+                }
 
-                    void unpin()
-                    {
-                        idx_it.unpin();
-                        to_be_sort_it.unpin();
-                        result_acc.unpin();
-                    }
+                void unpin()
+                {
+                    idx_it.unpin();
+                    to_be_sort_it.unpin();
+                    result_acc.unpin();
+                }
 
-                    void next(__DMH__)
-                    {
-                        idx_it.next(*this, __on_miss__);
-                        to_be_sort_it.next(*this, __on_miss__);
-                    }
+                void next(__DMH__)
+                {
+                    idx_it.next(*this, __on_miss__);
+                    to_be_sort_it.next(*this, __on_miss__);
+                }
 
-                    Scope(DereferenceScope* scope) : DereferenceScope(scope) {}
+                void next()
+                {
+                    idx_it.next(*this);
+                    to_be_sort_it.next(*this);
+                }
 
-                } scp(&scope);
-                const size_t idx_start = i * block;
-                const size_t idx_end   = std::min(idx_start + block, to_be_sorted.size());
-                scp.idx_it        = sorting_idxs.get_const_lite_iter(idx_start, scp, __on_miss__);
-                scp.to_be_sort_it = to_be_sorted.get_const_lite_iter(idx_start, scp, __on_miss__);
+                void next_group()
+                {
+                    idx_it.next_group(*this);
+                }
+
+                void next_to_be_sorted()
+                {
+                    to_be_sort_it.next(*this);
+                }
+
+                Scope(DereferenceScope* scope) : DereferenceScope(scope) {}
+
+            } scp(&scope);
+            const size_t idx_start = i * block;
+            const size_t idx_end   = std::min(idx_start + block, to_be_sorted.size());
+            if constexpr (alg == UTHREAD) {
+                scp.idx_it        = sorting_idxs.get_const_lite_iter(idx_start, scp, __on_miss__,
+                                                                     idx_start, idx_end);
+                scp.to_be_sort_it = to_be_sorted.get_const_lite_iter(idx_start, scp, __on_miss__,
+                                                                     idx_start, idx_end);
                 for (size_t idx = idx_start; idx < idx_end; idx++, scp.next(__on_miss__)) {
                     scp.result_acc    = result.at_mut(*(scp.idx_it), scp, __on_miss__);
                     *(scp.result_acc) = *(scp.to_be_sort_it);
                 }
-            });
-    } else if constexpr (alg == PREFETCH) {
-        {
-            struct Scope : public RootDereferenceScope {
-                decltype(sorting_idxs.clbegin()) idx_it;
-                decltype(to_be_sorted.clbegin()) to_be_sorted_it;
-                LiteAccessor<T, true> result_acc;
-
-                void pin() const override
-                {
-                    idx_it.pin();
-                    to_be_sorted_it.pin();
-                    result_acc.pin();
-                }
-
-                void unpin() const override
-                {
-                    idx_it.unpin();
-                    to_be_sorted_it.unpin();
-                    result_acc.unpin();
-                }
-            } scope;
-            scope.idx_it          = sorting_idxs.clbegin(scope);
-            scope.to_be_sorted_it = to_be_sorted.clbegin(scope);
-            for (uint64_t i = 0; i < sorting_idxs.size();
-                 i++, scope.idx_it.next(scope), scope.to_be_sorted_it.next(scope)) {
+            } else if constexpr (alg == PREFETCH || alg == PARAROUTINE) {
+                // TODO pararoutine
                 ON_MISS_BEGIN
                 ON_MISS_END
-                scope.result_acc    = result.at_mut(*scope.idx_it, scope, __on_miss__);
-                *(scope.result_acc) = *(scope.to_be_sorted_it);
-            }
-        }
-    } else if constexpr (alg == PARAROUTINE) {
-        using result_vec_t = std::remove_reference_t<decltype(result)>;
-        using result_it_t  = decltype(result.lbegin());
-        struct Context {
-            size_t idx;
-            T to_be_sorted_elem;
-            result_vec_t* result;
-            result_it_t result_it;
-            bool fetch_end;
-
-            bool fetched()
-            {
-                return result_it.at_local();
-            }
-            void pin()
-            {
-                result_it.pin();
-            }
-
-            void unpin()
-            {
-                result_it.unpin();
-            }
-
-            bool run(DereferenceScope& scope)
-            {
-                if (fetch_end) {
-                    goto next;
+                scp.idx_it = sorting_idxs.get_const_lite_iter(idx_start, scp, idx_start, idx_end);
+                scp.to_be_sort_it =
+                    to_be_sorted.get_const_lite_iter(idx_start, scp, idx_start, idx_end);
+                for (size_t idx = idx_start; idx < idx_end;
+                     idx += sorting_idxs.GROUP_SIZE, scp.next_group()) {
+                    auto& idx_group = *scp.idx_it.get_group_accessor();
+                    for (size_t ii = 0; ii < std::min(idx_end - idx, sorting_idxs.GROUP_SIZE);
+                         ii++, scp.next_to_be_sorted()) {
+                        scp.result_acc    = result.at_mut(idx_group[ii], scp, __on_miss__);
+                        *(scp.result_acc) = *scp.to_be_sort_it;
+                    }
                 }
-                result_it = result->get_lite_iter(idx);
-                result_it.async_fetch(scope);
-                fetch_end = true;
-                if (!fetched()) {
-                    return false;
-                }
-            next:
-                *result_it = to_be_sorted_elem;
-                return true;
+            } else {
+                ERROR("algorithm dont exist");
             }
-        };
-        const size_t vec_size = to_be_sorted.size();
-        using idx_it_t        = decltype(sorting_idxs.clbegin());
-        using elem_it_t       = decltype(to_be_sorted.clbegin());
-        struct Scope : public RootDereferenceScope {
-            idx_it_t idx_it;
-            elem_it_t elem_it;
-
-            void pin() const override
-            {
-                idx_it.pin();
-                elem_it.pin();
-            }
-
-            void unpin() const override
-            {
-                idx_it.unpin();
-                elem_it.unpin();
-            }
-        } root_scope;
-        root_scope.idx_it  = sorting_idxs.clbegin(root_scope);
-        root_scope.elem_it = to_be_sorted.clbegin(root_scope);
-        SCOPED_INLINE_ASYNC_FOR(Context, size_t, i, 0, i < vec_size, i++, root_scope)
-        Context ctx{
-            .idx               = *(root_scope.idx_it),
-            .to_be_sorted_elem = *(root_scope.elem_it),
-            .result            = &result,
-            .fetch_end         = false,
-        };
-        root_scope.idx_it.next(scope);
-        root_scope.elem_it.next(scope);
-        return ctx;
-        SCOPED_INLINE_ASYNC_FOR_END
-    } else {
-        ERROR("algorithm dont exist");
-    }
+        });
     std::swap(result, to_be_sorted);
 }
 

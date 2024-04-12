@@ -130,45 +130,19 @@ void HeteroVector::visit_impl_help_(T& visitor)
     if (iter != vectors_<U>.end()) {
         if constexpr (alg == DEFAULT) {
             for (auto&& element : iter->second) visitor(element);
-        } else if constexpr (alg == UTHREAD) {
+        } else {
             const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
-            const size_t block      = (iter->second.size() + thread_cnt - 1) / thread_cnt;
+            // aligned to group
+            const size_t block = (iter->second.group_count() + thread_cnt - 1) / thread_cnt *
+                                 iter->second.GROUP_SIZE;
             uthread::parallel_for_with_scope<1>(
                 thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
-                    ON_MISS_BEGIN
-                    uthread::yield();
-                    ON_MISS_END
-                    using it_t = decltype(iter->second.clbegin());
-                    struct Scope : public DereferenceScope {
-                        it_t it;
-
-                        void pin() const override
-                        {
-                            it.pin();
-                        }
-
-                        void unpin() const override
-                        {
-                            it.unpin();
-                        }
-                    } scp(&scope);
                     const size_t idx_start = i * block;
                     const size_t idx_end   = std::min(idx_start + block, iter->second.size());
-                    scp.it = iter->second.get_const_lite_iter(idx_start, scp, __on_miss__);
-                    for (size_t idx = idx_start; idx < idx_end;
-                         idx++, scp.it.next(scp, __on_miss__)) {
-                        visitor(*(scp.it));
-                    }
+                    iter->template for_each_aligned_group<alg>(
+                        [&](const U& u, DereferenceScope& scope) { visitor(u); }, idx_start,
+                        idx_end, scope);
                 });
-        } else if constexpr (alg == PREFETCH || alg == PARAROUTINE) {
-            RootDereferenceScope scope;
-            size_t vec_size = iter->second.size();
-            auto it         = iter->second.clbegin(scope);
-            for (size_t i = 0; i < vec_size; i++, it.next(scope)) {
-                visitor(*it);
-            }
-        } else {
-            ERROR("alg dont exist");
         }
     }
 }
@@ -186,45 +160,19 @@ void HeteroVector::visit_impl_help_(T& visitor) const
     if (citer != vectors_<U>.end()) {
         if constexpr (alg == DEFAULT) {
             for (auto&& element : citer->second) visitor(element);
-        } else if constexpr (alg == UTHREAD) {
+        } else {
             const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
-            const size_t block      = (citer->second.size() + thread_cnt - 1) / thread_cnt;
+            // aligned to group
+            const size_t block = (citer->second.group_count() + thread_cnt - 1) / thread_cnt *
+                                 citer->second.GROUP_SIZE;
             uthread::parallel_for_with_scope<1>(
                 thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
-                    ON_MISS_BEGIN
-                    uthread::yield();
-                    ON_MISS_END
-                    using it_t = decltype(citer->second.clbegin());
-                    struct Scope : public DereferenceScope {
-                        it_t it;
-
-                        void pin() const override
-                        {
-                            it.pin();
-                        }
-                        void unpin() const override
-                        {
-                            it.unpin();
-                        }
-
-                    } scp(&scope);
                     const size_t idx_start = i * block;
                     const size_t idx_end   = std::min(idx_start + block, citer->second.size());
-                    scp.it = citer->second.get_const_lite_iter(idx_start, scp, __on_miss__);
-                    for (size_t idx = idx_start; idx < idx_end;
-                         idx++, scp.it.next(scp, __on_miss__)) {
-                        visitor(*(scp.it));
-                    }
+                    citer->template for_each_aligned_group<alg>(
+                        [&](const U& u, DereferenceScope& scope) { visitor(u); }, idx_start,
+                        idx_end, scope);
                 });
-        } else if constexpr (alg == PREFETCH || alg == PARAROUTINE) {
-            RootDereferenceScope scope;
-            size_t vec_size = citer->second.size();
-            auto it         = citer->second.clbegin(scope);
-            for (size_t i = 0; i < vec_size; i++, it.next(scope)) {
-                visitor(*it);
-            }
-        } else {
-            ERROR("alg dont exist");
         }
     }
 }
@@ -258,7 +206,9 @@ void HeteroVector::change_impl_help_(T& functor) const
 {
     const auto citer = vectors_<U>.find(this);
 
-    if (citer != vectors_<U>.end()) functor(citer->second);
+    if (citer != vectors_<U>.end()) {
+        functor(citer->second);
+    }
 }
 
 // ----------------------------------------------------------------------------

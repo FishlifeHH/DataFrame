@@ -34,8 +34,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 namespace hmdf
 {
 
-HeteroVector::HeteroVector ()  {
-
+HeteroVector::HeteroVector()
+{
     clear_functions_.reserve(2);
     copy_functions_.reserve(2);
     move_functions_.reserve(2);
@@ -43,21 +43,30 @@ HeteroVector::HeteroVector ()  {
 
 // ----------------------------------------------------------------------------
 
-HeteroVector::HeteroVector (const HeteroVector &that)  { *this = that; }
-HeteroVector::HeteroVector (HeteroVector &&that)  { *this = that; }
+HeteroVector::HeteroVector(const HeteroVector& that) noexcept
+{
+    // std::cout << "hetero copy" << std::endl;
+    *this = that;
+}
+HeteroVector::HeteroVector(HeteroVector&& that) noexcept
+{
+    // auto start = get_cycles();
+    *this = std::move(that);
+    // auto end   = get_cycles();
+    // std::cout << "move hvector: " << end - start << std::endl;
+}
 
 // ----------------------------------------------------------------------------
 
-HeteroVector &HeteroVector::operator= (const HeteroVector &rhs)  {
-
-    if (&rhs != this)  {
+HeteroVector& HeteroVector::operator=(const HeteroVector& rhs)
+{
+    if (&rhs != this) {
         clear();
         clear_functions_ = rhs.clear_functions_;
-        copy_functions_ = rhs.copy_functions_;
-        move_functions_ = rhs.move_functions_;
+        copy_functions_  = rhs.copy_functions_;
+        move_functions_  = rhs.move_functions_;
 
-        for (auto &&copy_function : copy_functions_)
-            copy_function(rhs, *this);
+        for (auto&& copy_function : copy_functions_) copy_function(rhs, *this);
     }
 
     return (*this);
@@ -65,16 +74,15 @@ HeteroVector &HeteroVector::operator= (const HeteroVector &rhs)  {
 
 // ----------------------------------------------------------------------------
 
-HeteroVector &HeteroVector::operator= (HeteroVector &&rhs)  {
-
-    if (&rhs != this)  {
+HeteroVector& HeteroVector::operator=(HeteroVector&& rhs)
+{
+    if (&rhs != this) {
         clear();
         clear_functions_ = std::move(rhs.clear_functions_);
-        copy_functions_ = std::move(rhs.copy_functions_);
-        move_functions_ = std::move(rhs.move_functions_);
+        copy_functions_  = std::move(rhs.copy_functions_);
+        move_functions_  = std::move(rhs.move_functions_);
 
-        for (auto &&move_function : move_functions_)
-            move_function(rhs, *this);
+        for (auto&& move_function : move_functions_) move_function(rhs, *this);
     }
 
     return (*this);
@@ -82,13 +90,12 @@ HeteroVector &HeteroVector::operator= (HeteroVector &&rhs)  {
 
 // ----------------------------------------------------------------------------
 
-void HeteroVector::clear()  {
-
-    for (auto &&clear_func : clear_functions_)
-        clear_func (*this);
+void HeteroVector::clear()
+{
+    for (auto&& clear_func : clear_functions_) clear_func(*this);
 }
 
-} // namespace hmdf
+}  // namespace hmdf
 
 // ----------------------------------------------------------------------------
 

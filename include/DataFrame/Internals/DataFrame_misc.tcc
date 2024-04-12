@@ -50,7 +50,7 @@ void DataFrame<I, H>::consistent_functor_<Ts...>::operator()(T& vec) const
 {
     using ValueType = typename std::remove_reference<decltype(vec)>::type::value_type;
 
-    vec.resize(size, ValueType());
+    vec.resize(size);
 }
 
 // ----------------------------------------------------------------------------
@@ -685,9 +685,8 @@ void DataFrame<I, H>::alg_sel_load_functor_<alg, IT, Ts...>::operator()(FarLib::
     using namespace FarLib::cache;
     using ValueType = typename FarLib::FarVector<T>::value_type;
 
-    auto new_col = vec.template copy_data_by_idx<alg>(sel_indices);
-
-    df.load_column<alg, T>(name, std::move(new_col), nan_policy::dont_pad_with_nans);
+    df.load_column<alg, T>(name, vec.template copy_data_by_idx<alg>(sel_indices),
+                           nan_policy::dont_pad_with_nans);
 
     return;
 }

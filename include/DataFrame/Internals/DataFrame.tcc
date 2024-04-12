@@ -80,131 +80,103 @@ void DataFrame<I, H>::sort_common_(DataFrame<I, H>& df, FarLib::FarVector<T>& ve
         constexpr int64_t T_max     = std::numeric_limits<T>::max();
         constexpr int64_t T_min     = std::numeric_limits<T>::min();
         constexpr int64_t cnts_size = T_max - T_min + 1;
-        auto cnts                   = std::make_unique<uint64_t[]>(cnts_size);
-        memset(cnts.get(), 0, sizeof(uint64_t) * cnts_size);
-        if constexpr (alg == UTHREAD) {
-            // this alg is unstable
-            const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
-            const size_t block1     = (vec.size() + thread_cnt - 1) / thread_cnt;
-            uthread::parallel_for_with_scope<1>(
-                thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
-                    ON_MISS_BEGIN
-                    uthread::yield();
-                    ON_MISS_END
-                    using it_t = decltype(vec.clbegin());
-                    struct Scope : public DereferenceScope {
-                        it_t it;
+        std::vector<uint64_t> cnts(cnts_size, 0);
+        // this alg is unstable
+        const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
+        // aligned to group
+        const size_t block1 = (vec.groups_count() + thread_cnt - 1) / thread_cnt * vec.GROUP_SIZE;
+        std::vector<std::vector<uint64_t>> ucnts;
+        for (size_t i = 0; i < thread_cnt; i++) {
+            ucnts.emplace_back(cnts_size, 0);
+        }
+        uthread::parallel_for_with_scope<1>(
+            thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
+                auto& ucnt             = ucnts[i];
+                const size_t idx_start = i * block1;
+                const size_t idx_end   = std::min(idx_start + block1, vec.size());
 
-                        void pin() const override
-                        {
-                            it.pin();
-                        }
-                        void unpin() const override
-                        {
-                            it.unpin();
-                        }
-
-                        Scope(DereferenceScope* scope) : DereferenceScope(scope) {}
-                    } scp(&scope);
-                    const size_t idx_start = i * block1;
-                    const size_t idx_end   = std::min(idx_start + block1, vec.size());
-                    scp.it                 = vec.get_const_lite_iter(idx_start, scp, __on_miss__);
-                    for (size_t idx = idx_start; idx < idx_end;
-                         idx++, scp.it.next(scp, __on_miss__)) {
-                        cnts[*(scp.it) - T_min]++;
-                    }
-                });
-            for (uint64_t i = 1; i < cnts_size; i++) {
-                cnts[i] += cnts[i - 1];
+                vec.template for_each_aligned_group<alg>(
+                    [&](const T& t, DereferenceScope& scope) { ucnt[t - T_min]++; }, idx_start,
+                    idx_end, scope);
+            });
+        for (uint64_t i = 0; i < thread_cnt; i++) {
+            for (uint64_t j = 0; j < cnts_size; j++) {
+                cnts[j] += ucnts[i][j];
             }
-            const size_t vec_size = vec.size();
-            sorting_idxs.template resize<true>(vec.size());
-            const size_t block2 = block1;
-            uthread::parallel_for_with_scope<1>(
-                thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
-                    ON_MISS_BEGIN
-                    uthread::yield();
-                    ON_MISS_END
-                    using it_t     = decltype(vec.clbegin());
-                    using idx_it_t = decltype(sorting_idxs.lbegin());
-                    struct Scope : public DereferenceScope {
-                        it_t it;
-                        idx_it_t idx_it;
+        }
+        // for (size_t i = 0; i < cnts_size; i++) {
+        //     std::cout << i << ": " << cnts[i] << std::endl;
+        // }
 
-                        void pin() const override
-                        {
-                            it.pin();
-                            idx_it.pin();
-                        }
-
-                        void unpin() const override
-                        {
-                            it.unpin();
-                            idx_it.unpin();
-                        }
-
-                        void prev(__DMH__)
-                        {
-                            it.prev(*this, __on_miss__);
-                            idx_it.prev(*this, __on_miss__);
-                        }
-
-                        Scope(DereferenceScope* scope) : DereferenceScope(scope) {}
-                    } scp(&scope);
-                    const size_t idx_start = i * block2;
-                    const size_t idx_end   = std::min(idx_start + block2, vec_size);
-                    scp.it                 = vec.get_const_lite_iter(idx_end - 1, scp, __on_miss__);
-                    scp.idx_it = sorting_idxs.get_lite_iter(idx_end - 1, scp, __on_miss__);
-                    for (size_t idx = idx_start; idx < idx_end; idx++, scp.prev(__on_miss__)) {
-                        auto new_idx = --cnts[*(scp.it) - T_min];
-                        if constexpr (!Ascend) {
-                            new_idx = vec_size - new_idx - 1;
-                        }
-                        *(scp.idx_it) = new_idx;
-                    }
-                });
-        } else if constexpr (alg == PREFETCH || alg == PARAROUTINE) {
-            {
-                RootDereferenceScope scope;
-                for (auto it = vec.clbegin(scope); it < vec.clend(); it.next(scope)) {
-                    cnts[*it - T_min]++;
-                }
-            }
-            for (uint64_t i = 1; i < cnts_size; i++) {
-                cnts[i] += cnts[i - 1];
-            }
-            sorting_idxs.template resize<true>(vec.size());
-            struct Scope : public RootDereferenceScope {
-                decltype(vec.clbegin()) vec_it;
-                decltype(sorting_idxs.lbegin()) idx_it;
+        for (uint64_t i = 1; i < cnts_size; i++) {
+            cnts[i] += cnts[i - 1];
+        }
+        const size_t vec_size = vec.size();
+        sorting_idxs.template resize<true>(vec.size());
+        const size_t block2 = vec_size;
+        uthread::parallel_for_with_scope<1>(1, 1, [&](size_t i, DereferenceScope& scope) {
+            // count sort cannot asynchronous
+            using it_t     = decltype(vec.clbegin());
+            using idx_it_t = decltype(sorting_idxs.lbegin());
+            struct Scope : public DereferenceScope {
+                it_t it;
+                idx_it_t idx_it;
 
                 void pin() const override
                 {
-                    vec_it.pin();
+                    it.pin();
                     idx_it.pin();
                 }
 
                 void unpin() const override
                 {
-                    vec_it.unpin();
+                    it.unpin();
                     idx_it.unpin();
                 }
-            } scope;
-            scope.vec_it    = vec.clend(scope);
-            scope.idx_it    = sorting_idxs.lend(scope);
-            size_t vec_size = vec.size();
-            for (int64_t i = vec_size - 1; i >= 0; --i) {
-                scope.vec_it.prev(scope);
-                scope.idx_it.prev(scope);
-                auto idx = --cnts[*(scope.vec_it) - T_min];
-                if constexpr (!Ascend) {
-                    idx = vec_size - idx - 1;
+
+                void prev(__DMH__)
+                {
+                    it.prev(*this, __on_miss__);
+                    idx_it.prev(*this, __on_miss__);
                 }
-                *(scope.idx_it) = idx;
+                void prev()
+                {
+                    it.prev(*this);
+                    idx_it.prev(*this);
+                }
+
+                Scope(DereferenceScope* scope) : DereferenceScope(scope) {}
+            } scp(&scope);
+            const size_t idx_start = i * block2;
+            const size_t idx_end   = std::min(idx_start + block2, vec_size);
+            if constexpr (alg == UTHREAD) {
+                ON_MISS_BEGIN
+                uthread::yield();
+                ON_MISS_END
+                scp.it = vec.get_const_lite_iter(idx_end - 1, scp, __on_miss__, idx_start, idx_end);
+                scp.idx_it =
+                    sorting_idxs.get_lite_iter(idx_end - 1, scp, __on_miss__, idx_start, idx_end);
+                for (size_t idx = idx_start; idx < idx_end; idx++, scp.prev(__on_miss__)) {
+                    auto new_idx = --cnts[*(scp.it) - T_min];
+                    if constexpr (!Ascend) {
+                        new_idx = vec_size - new_idx - 1;
+                    }
+                    *(scp.idx_it) = new_idx;
+                }
+            } else if constexpr (alg == PREFETCH || alg == PARAROUTINE) {
+                scp.it     = vec.get_const_lite_iter(idx_end - 1, scp, idx_start, idx_end);
+                scp.idx_it = sorting_idxs.get_lite_iter(idx_end - 1, scp, idx_start, idx_end);
+                for (size_t idx = idx_start; idx < idx_end; idx++, scp.prev()) {
+                    auto new_idx = --cnts[*(scp.it) - T_min];
+                    if constexpr (!Ascend) {
+                        new_idx = vec_size - new_idx - 1;
+                    }
+                    *(scp.idx_it) = new_idx;
+                }
+            } else {
+                ERROR("alg dont exist");
             }
-        } else {
-            ERROR("alg dont exist");
-        }
+        });
     }
     // std::cout << "[";
     // for (size_t i = 0; i < idx_s; i++) {
