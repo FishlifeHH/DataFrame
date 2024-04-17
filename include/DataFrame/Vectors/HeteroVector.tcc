@@ -57,7 +57,9 @@ HeteroVector::WrappedVector<T>& HeteroVector::get_vector()
         });
 
         move_functions_.emplace_back([](HeteroVector& from, HeteroVector& to) {
+            assert(&from != &to);
             vectors_<T>[&to] = std::move(vectors_<T>[&from]);
+            vectors_<T>.erase(&from);
         });
 
         iter = vectors_<T>.emplace(this, HeteroVector::WrappedVector<T>()).first;
@@ -139,6 +141,9 @@ void HeteroVector::visit_impl_help_(T& visitor)
                 thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
                     const size_t idx_start = i * block;
                     const size_t idx_end   = std::min(idx_start + block, iter->second.size());
+                    if (idx_start >= idx_end) {
+                        return;
+                    }
                     iter->template for_each_aligned_group<alg>(
                         [&](const U& u, DereferenceScope& scope) { visitor(u); }, idx_start,
                         idx_end, scope);
@@ -169,6 +174,9 @@ void HeteroVector::visit_impl_help_(T& visitor) const
                 thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
                     const size_t idx_start = i * block;
                     const size_t idx_end   = std::min(idx_start + block, citer->second.size());
+                    if (idx_start >= idx_end) {
+                        return;
+                    }
                     citer->template for_each_aligned_group<alg>(
                         [&](const U& u, DereferenceScope& scope) { visitor(u); }, idx_start,
                         idx_end, scope);
@@ -192,11 +200,22 @@ void HeteroVector::sort_impl_help_(T& functor)
 template <typename T, typename U>
 void HeteroVector::change_impl_help_(T& functor)
 {
-    auto iter = vectors_<U>.find(this);
+    for (auto& iter : vectors_<int>) {
+        assert(iter.second.state != FarLib::BE_MOVED);
+    }
+    for (auto& iter : vectors_<char>) {
+        assert(iter.second.state != FarLib::BE_MOVED);
+    }
+    for (auto& iter : vectors_<double>) {
+        assert(iter.second.state != FarLib::BE_MOVED);
+    }
 
-    if (iter != vectors_<U>.end())
-        // TODO opt use view / multithread / scope
+    auto iter = vectors_<U>.find(this);
+    if (iter != vectors_<U>.end()) {
+        assert(iter->second.state != FarLib::BE_MOVED);
         functor(iter->second);
+        assert(iter->second.state != FarLib::BE_MOVED);
+    }
 }
 
 // ----------------------------------------------------------------------------

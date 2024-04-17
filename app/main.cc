@@ -113,8 +113,8 @@ void print_passage_counts_by_vendor_id(StdDataFrame<uint64_t>& df, int vendor_id
             passage_count_map[passage_count]++;
         }
     } else {
-        const size_t thread_cnt = alg == UTHREAD ? uthread::get_worker_count() * UTH_FACTOR
-                                                 : uthread::get_worker_count() * UTH_FACTOR;
+        const size_t thread_cnt =
+            alg == UTHREAD ? uthread::get_worker_count() * UTH_FACTOR : uthread::get_worker_count();
         // aligned to group
         const size_t block = (passage_count_vec.groups_count() + thread_cnt - 1) / thread_cnt *
                              passage_count_vec.GROUP_SIZE;
@@ -125,6 +125,9 @@ void print_passage_counts_by_vendor_id(StdDataFrame<uint64_t>& df, int vendor_id
                 map_t& pmap            = maps[i];
                 const size_t idx_start = i * block;
                 const size_t idx_end   = std::min(idx_start + block, passage_count_vec.size());
+                if (idx_start >= idx_end) {
+                    return;
+                }
                 passage_count_vec.template for_each_aligned_group<alg>(
                     [&](const int& count, DereferenceScope& scope) { pmap[count]++; }, idx_start,
                     idx_end, scope);
@@ -159,8 +162,8 @@ void calculate_trip_duration(StdDataFrame<uint64_t>& df)
             *duration_vec[i]         = (dropoff_time_second - pickup_time_second);
         }
     } else {
-        const size_t thread_cnt = alg == UTHREAD ? uthread::get_worker_count() * UTH_FACTOR
-                                                 : uthread::get_worker_count() * UTH_FACTOR;
+        const size_t thread_cnt =
+            alg == UTHREAD ? uthread::get_worker_count() * UTH_FACTOR : uthread::get_worker_count();
         // aligned to group
         const size_t block = (pickup_time_vec.groups_count() + thread_cnt - 1) / thread_cnt *
                              pickup_time_vec.GROUP_SIZE;
@@ -216,6 +219,9 @@ void calculate_trip_duration(StdDataFrame<uint64_t>& df)
                 } scp(&scope);
                 const size_t idx_start = i * block;
                 const size_t idx_end   = std::min(idx_start + block, pickup_time_vec.size());
+                if (idx_start >= idx_end) {
+                    return;
+                }
                 if constexpr (alg == UTHREAD) {
                     ON_MISS_BEGIN
                     uthread::yield();
@@ -259,8 +265,8 @@ void calculate_trip_duration(StdDataFrame<uint64_t>& df)
     auto& d_vec   = df.get_column<uint64_t>("duration");
     uint64_t mind = std::numeric_limits<uint64_t>::max(), maxd = 0, sumd = 0, cntd = 0;
     if constexpr (alg != DEFAULT) {
-        const size_t thread_cnt = alg == UTHREAD ? uthread::get_worker_count() * UTH_FACTOR
-                                                 : uthread::get_worker_count() * UTH_FACTOR;
+        const size_t thread_cnt =
+            alg == UTHREAD ? uthread::get_worker_count() * UTH_FACTOR : uthread::get_worker_count();
         // aligned to group
         const size_t block = (pickup_time_vec.groups_count() + thread_cnt - 1) / thread_cnt *
                              pickup_time_vec.GROUP_SIZE;
@@ -271,10 +277,13 @@ void calculate_trip_duration(StdDataFrame<uint64_t>& df)
             thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
                 const size_t idx_start = i * block;
                 const size_t idx_end   = std::min(idx_start + block, d_vec.size());
-                uint64_t& umind        = uminds[i];
-                uint64_t& umaxd        = umaxds[i];
-                uint64_t& usumd        = usumds[i];
-                uint64_t& ucntd        = ucntds[i];
+                if (idx_start >= idx_end) {
+                    return;
+                }
+                uint64_t& umind = uminds[i];
+                uint64_t& umaxd = umaxds[i];
+                uint64_t& usumd = usumds[i];
+                uint64_t& ucntd = ucntds[i];
                 d_vec.template for_each_aligned_group<alg>(
                     [&](const uint64_t& d, DereferenceScope& scope) {
                         if (is_nan__(d)) {
@@ -358,6 +367,9 @@ void calculate_distribution_store_and_fwd_flag(StdDataFrame<uint64_t>& df)
             } scp(&scope);
             const size_t idx_start = i * block;
             const size_t idx_end   = std::min(idx_start + block, unique_vendor_id_vec.size());
+            if (idx_start >= idx_end) {
+                return;
+            }
             scp.it = unique_vendor_id_vec.get_const_lite_iter(idx_start, scp, __on_miss__,
                                                               idx_start, idx_end);
             for (size_t idx = idx_start; idx < idx_end; idx++, scp.it.next(scope, __on_miss__)) {
@@ -398,8 +410,8 @@ void calculate_haversine_distance_column(StdDataFrame<uint64_t>& df)
                            *dropoff_latitude_vec[i], *dropoff_longitude_vec[i]));
         }
     } else {
-        const size_t thread_cnt = alg == UTHREAD ? uthread::get_worker_count() * UTH_FACTOR
-                                                 : uthread::get_worker_count() * UTH_FACTOR;
+        const size_t thread_cnt =
+            alg == UTHREAD ? uthread::get_worker_count() * UTH_FACTOR : uthread::get_worker_count();
         const size_t block = (pickup_longitude_vec.groups_count() + thread_cnt - 1) / thread_cnt *
                              pickup_longitude_vec.GROUP_SIZE;
         // const size_t block = (pickup_longitude_vec.size() + thread_cnt - 1) / thread_cnt;
@@ -466,6 +478,9 @@ void calculate_haversine_distance_column(StdDataFrame<uint64_t>& df)
                 } scp(&scope);
                 const size_t idx_start = i * block;
                 const size_t idx_end   = std::min(idx_start + block, pickup_longitude_vec.size());
+                if (idx_start >= idx_end) {
+                    return;
+                }
                 constexpr size_t group_size = pickup_latitude_vec.GROUP_SIZE;
                 if constexpr (alg == UTHREAD) {
                     ON_MISS_BEGIN
@@ -573,8 +588,8 @@ void analyze_trip_timestamp(StdDataFrame<uint64_t>& df)
             *month_it = time.month_;
         }
     } else {
-        const size_t thread_cnt = alg == UTHREAD ? uthread::get_worker_count() * UTH_FACTOR
-                                                 : uthread::get_worker_count() * UTH_FACTOR;
+        const size_t thread_cnt =
+            alg == UTHREAD ? uthread::get_worker_count() * UTH_FACTOR : uthread::get_worker_count();
         // aligned to group
         const size_t block = (pickup_hour_vec.groups_count() + thread_cnt - 1) / thread_cnt *
                              pickup_hour_vec.GROUP_SIZE;
@@ -642,9 +657,12 @@ void analyze_trip_timestamp(StdDataFrame<uint64_t>& df)
                 } scp(&scope);
                 const size_t idx_start = i * block;
                 const size_t idx_end   = std::min(idx_start + block, pickup_time_vec.size());
-                auto& hmap             = hmaps[i];
-                auto& dmap             = dmaps[i];
-                auto& mmap             = mmaps[i];
+                if (idx_start >= idx_end) {
+                    return;
+                }
+                auto& hmap = hmaps[i];
+                auto& dmap = dmaps[i];
+                auto& mmap = mmaps[i];
                 if constexpr (alg == UTHREAD) {
                     ON_MISS_BEGIN
                     uthread::yield();
@@ -793,6 +811,9 @@ void analyze_trip_durations_of_timestamps(StdDataFrame<uint64_t>& df, const char
             } scp(&scope);
             const size_t idx_start = i * block;
             const size_t idx_end   = std::min(idx_start + block, key_vec.size());
+            if (idx_start >= idx_end) {
+                return;
+            }
             scp.key_it =
                 key_vec.get_const_lite_iter(idx_start, scp, __on_miss__, idx_start, idx_end);
             scp.duration_it =
@@ -846,8 +867,8 @@ int main(int argc, const char* argv[])
 #ifdef SIMPLE_BENCH
     // ~74M
     config.server_buffer_size = 1024L * 1024 * 256;
-    config.client_buffer_size = 1024 * 1024 * 8;
-    config.max_thread_cnt     = 1;
+    config.client_buffer_size = 1024 * 1024 * 16;
+    config.max_thread_cnt     = 9;
 #else
     // ~16G
     config.server_buffer_size = 1024L * 1024 * 1024 * 64;

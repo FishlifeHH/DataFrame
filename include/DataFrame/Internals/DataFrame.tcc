@@ -82,7 +82,8 @@ void DataFrame<I, H>::sort_common_(DataFrame<I, H>& df, FarLib::FarVector<T>& ve
         constexpr int64_t cnts_size = T_max - T_min + 1;
         std::vector<uint64_t> cnts(cnts_size, 0);
         // this alg is unstable
-        const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
+        const size_t thread_cnt =
+            alg == UTHREAD ? uthread::get_worker_count() * UTH_FACTOR : uthread::get_worker_count();
         // aligned to group
         const size_t block1 = (vec.groups_count() + thread_cnt - 1) / thread_cnt * vec.GROUP_SIZE;
         std::vector<std::vector<uint64_t>> ucnts;
@@ -94,7 +95,9 @@ void DataFrame<I, H>::sort_common_(DataFrame<I, H>& df, FarLib::FarVector<T>& ve
                 auto& ucnt             = ucnts[i];
                 const size_t idx_start = i * block1;
                 const size_t idx_end   = std::min(idx_start + block1, vec.size());
-
+                if (idx_start >= idx_end) {
+                    return;
+                }
                 vec.template for_each_aligned_group<alg>(
                     [&](const T& t, DereferenceScope& scope) { ucnt[t - T_min]++; }, idx_start,
                     idx_end, scope);
@@ -149,6 +152,9 @@ void DataFrame<I, H>::sort_common_(DataFrame<I, H>& df, FarLib::FarVector<T>& ve
             } scp(&scope);
             const size_t idx_start = i * block2;
             const size_t idx_end   = std::min(idx_start + block2, vec_size);
+            if (idx_start >= idx_end) {
+                return;
+            }
             if constexpr (alg == UTHREAD) {
                 ON_MISS_BEGIN
                 uthread::yield();
@@ -1081,13 +1087,25 @@ DataFrame<I, H> DataFrame<I, H>::groupby(F&& func, const char* gb_col_name,
                                          sort_state already_sorted) const
 {
     DataFrame tmp_df = *this;
+    auto& key_vec    = tmp_df.get_column<T>(gb_col_name);
+    auto& d_vec      = tmp_df.get_column<uint64_t>("duration");
 
+    auto assert_vec = [&]() {
+        assert(key_vec.state != FarLib::BE_MOVED &&
+               tmp_df.get_column<T>(gb_col_name).state != FarLib::BE_MOVED &&
+               d_vec.state != FarLib::BE_MOVED &&
+               tmp_df.get_column<uint64_t>("duration").state != FarLib::BE_MOVED);
+    };
+
+    assert_vec();
+    for (int i = 0; i < 10000; i++) {
+        assert_vec();
+    }
     if (already_sorted == sort_state::not_sorted)
         tmp_df.sort<alg, T, Ts...>(gb_col_name, sort_spec::ascen);
-
-    auto& index_vec    = tmp_df.get_index();
-    auto& key_vec      = tmp_df.get_column<T>(gb_col_name);
-    auto& duration_vec = tmp_df.get_column<uint64_t>("duration");
+    assert_vec();
+    // auto& index_vec    = tmp_df.get_index();
+    // auto& duration_vec = tmp_df.get_column<uint64_t>("duration");
 
     // for (uint64_t i = 0; i < key_vec.size(); i++) {
     //     std::cout << *(index_vec[i]) << " " << static_cast<int>(*key_vec[i]) << " "
@@ -1102,6 +1120,9 @@ DataFrame<I, H> DataFrame<I, H>::groupby(F&& func, const char* gb_col_name,
 
         tmp_df.data_[iter.second].change(functor);
     }
+    assert_vec();
+    assert(result.get_column<T>(gb_col_name).state != FarLib::BE_MOVED);
+    assert(result.get_column<uint64_t>("duration").state != FarLib::BE_MOVED);
 
     size_type marker = 0;
 
@@ -1112,13 +1133,22 @@ DataFrame<I, H> DataFrame<I, H>::groupby(F&& func, const char* gb_col_name,
             if (*tmp_df.indices_[i] != *tmp_df.indices_[marker]) {
                 {
                     RootDereferenceScope scope;
+                    assert(result.get_column<T>(gb_col_name).state != FarLib::BE_MOVED);
+                    assert(result.get_column<uint64_t>("duration").state != FarLib::BE_MOVED);
+
                     result.append_index(*tmp_df.indices_[marker], scope);
+                    assert(result.get_column<T>(gb_col_name).state != FarLib::BE_MOVED);
+                    assert(result.get_column<uint64_t>("duration").state != FarLib::BE_MOVED);
                 }
                 for (const auto& iter : tmp_df.column_tb_) {
                     groupby_functor_<F, Ts...> functor(iter.first.c_str(), marker, i,
                                                        tmp_df.indices_, func, result);
+                    assert(result.get_column<T>(gb_col_name).state != FarLib::BE_MOVED);
+                    assert(result.get_column<uint64_t>("duration").state != FarLib::BE_MOVED);
 
                     tmp_df.data_[iter.second].change(functor);
+                    assert(result.get_column<T>(gb_col_name).state != FarLib::BE_MOVED);
+                    assert(result.get_column<uint64_t>("duration").state != FarLib::BE_MOVED);
                 }
 
                 marker = i;
@@ -1127,25 +1157,44 @@ DataFrame<I, H> DataFrame<I, H>::groupby(F&& func, const char* gb_col_name,
         if (marker < vec_size) {
             {
                 RootDereferenceScope scope;
+                assert(result.get_column<T>(gb_col_name).state != FarLib::BE_MOVED);
+                assert(result.get_column<uint64_t>("duration").state != FarLib::BE_MOVED);
+
                 result.append_index(*tmp_df.indices_[vec_size - 1], scope);
+                assert(result.get_column<T>(gb_col_name).state != FarLib::BE_MOVED);
+                assert(result.get_column<uint64_t>("duration").state != FarLib::BE_MOVED);
             }
             for (const auto& iter : tmp_df.column_tb_) {
                 groupby_functor_<F, Ts...> functor(iter.first.c_str(), marker, vec_size,
                                                    tmp_df.indices_, func, result);
+                assert(result.get_column<T>(gb_col_name).state != FarLib::BE_MOVED);
+                assert(result.get_column<uint64_t>("duration").state != FarLib::BE_MOVED);
 
                 tmp_df.data_[iter.second].change(functor);
+                assert(result.get_column<T>(gb_col_name).state != FarLib::BE_MOVED);
+                assert(result.get_column<uint64_t>("duration").state != FarLib::BE_MOVED);
             }
         }
     } else {  // Non-index column
         const ColumnVecType<T>& gb_vec = tmp_df.get_column<T>(gb_col_name);
-        const size_type vec_size       = gb_vec.size();
+        assert_vec();
+        assert(result.get_column<T>(gb_col_name).state != FarLib::BE_MOVED);
+        assert(result.get_column<uint64_t>("duration").state != FarLib::BE_MOVED);
 
+        const size_type vec_size = gb_vec.size();
         for (size_type i = 0; i < vec_size; ++i) {
             if (*gb_vec[i] != *gb_vec[marker]) {
                 groupby_functor_<F, IndexType> ts_functor(DF_INDEX_COL_NAME, marker, i,
                                                           tmp_df.indices_, func, result);
-
+                assert_vec();
+                assert(result.get_column<T>(gb_col_name).state != FarLib::BE_MOVED);
+                assert(result.get_column<uint64_t>("duration").state != FarLib::BE_MOVED);
                 ts_functor(tmp_df.indices_);
+                assert(result.get_column<T>(gb_col_name).state != FarLib::BE_MOVED);
+                assert(result.get_column<uint64_t>("duration").state != FarLib::BE_MOVED);
+
+                assert_vec();
+
                 {
                     RootDereferenceScope scope;
                     result.append_column<T>(gb_col_name, *gb_vec[marker], scope,
@@ -1156,20 +1205,35 @@ DataFrame<I, H> DataFrame<I, H>::groupby(F&& func, const char* gb_col_name,
                     if (iter.first != gb_col_name) {
                         groupby_functor_<F, Ts...> functor(iter.first.c_str(), marker, i,
                                                            tmp_df.indices_, func, result);
+                        assert_vec();
+                        assert(result.get_column<T>(gb_col_name).state != FarLib::BE_MOVED);
+                        assert(result.get_column<uint64_t>("duration").state != FarLib::BE_MOVED);
 
                         tmp_df.data_[iter.second].change(functor);
+                        assert(result.get_column<T>(gb_col_name).state != FarLib::BE_MOVED);
+                        assert(result.get_column<uint64_t>("duration").state != FarLib::BE_MOVED);
+
+                        assert_vec();
                     }
                 }
 
                 marker = i;
             }
         }
+        assert_vec();
 
         if (marker < vec_size) {
             groupby_functor_<F, IndexType> ts_functor(DF_INDEX_COL_NAME, marker, vec_size,
                                                       tmp_df.indices_, func, result);
+            assert_vec();
+            assert(result.get_column<T>(gb_col_name).state != FarLib::BE_MOVED);
+            assert(result.get_column<uint64_t>("duration").state != FarLib::BE_MOVED);
 
             ts_functor(tmp_df.indices_);
+            assert(result.get_column<T>(gb_col_name).state != FarLib::BE_MOVED);
+            assert(result.get_column<uint64_t>("duration").state != FarLib::BE_MOVED);
+
+            assert_vec();
             {
                 RootDereferenceScope scope;
                 result.append_column<T>(gb_col_name, *gb_vec[vec_size - 1], scope,
@@ -1185,6 +1249,7 @@ DataFrame<I, H> DataFrame<I, H>::groupby(F&& func, const char* gb_col_name,
                 }
             }
         }
+        assert_vec();
     }
 
     return (result);

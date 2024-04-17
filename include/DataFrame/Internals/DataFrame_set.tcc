@@ -479,6 +479,9 @@ typename DataFrame<I, H>::size_type DataFrame<I, H>::load_column(
                     } scp(&scope);
                     const size_t idx_start = i * block;
                     const size_t idx_end   = std::min(idx_start + block, idx_s - data_s);
+                    if (idx_start >= idx_end) {
+                        return;
+                    }
                     if constexpr (alg == UTHREAD) {
                         ON_MISS_BEGIN
                         uthread::yield();
@@ -593,7 +596,110 @@ template <typename T>
 typename DataFrame<I, H>::size_type DataFrame<I, H>::load_column(
     const char* name, const typename H::WrappedVector<T>& data, nan_policy padding)
 {
-    return (load_column<T>(name, {data.begin(), data.end()}, padding));
+    auto sstart = get_cycles();
+    using namespace FarLib;
+    using namespace FarLib::cache;
+    const size_type idx_s  = indices_.size();
+    const size_type data_s = data.size();
+
+    if (data_s > idx_s) {
+        char buffer[512];
+
+        sprintf(buffer,
+                "DataFrame::load_column(): ERROR: "
+#ifdef _WIN32
+                "data size of %zu is larger than index size of %zu",
+#else
+                "data size of %lu is larger than index size of %lu",
+#endif  // _WIN32
+                data_s, idx_s);
+        throw InconsistentData(buffer);
+    }
+
+    size_type ret_cnt = data_s;
+    // auto pstart       = get_cycles();
+    // if (padding == nan_policy::pad_with_nans && data_s < idx_s) {
+    //     if constexpr (alg == DEFAULT) {
+    //         RootDereferenceScope scope;
+    //         for (size_type i = 0; i < idx_s - data_s; ++i) {
+    //             data.push_back(std::move(_get_nan<T>()), scope);
+    //             ret_cnt += 1;
+    //         }
+    //     } else {
+    //         data.resize(idx_s);
+    //         const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
+    //         const size_t block      = (idx_s - data_s + thread_cnt - 1) / thread_cnt;
+    //         uthread::parallel_for_with_scope<1>(
+    //             thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
+    //                 using data_it_t = decltype(data.lbegin());
+    //                 struct Scope : public DereferenceScope {
+    //                     data_it_t data_it;
+
+    //                     void pin() const override
+    //                     {
+    //                         data_it.pin();
+    //                     }
+
+    //                     void unpin() const override
+    //                     {
+    //                         data_it.unpin();
+    //                     }
+
+    //                     Scope(DereferenceScope* scope) : DereferenceScope(scope) {}
+
+    //                 } scp(&scope);
+    //                 const size_t idx_start = i * block;
+    //                 const size_t idx_end   = std::min(idx_start + block, idx_s - data_s);
+    //                 if (idx_start >= idx_end) {
+    //                     return;
+    //                 }
+    //                 if constexpr (alg == UTHREAD) {
+    //                     ON_MISS_BEGIN
+    //                     uthread::yield();
+    //                     ON_MISS_END
+    //                     scp.data_it =
+    //                         data.get_lite_iter(data_s, scp, __on_miss__, idx_start, idx_end);
+    //                     for (size_t idx = idx_start; idx < idx_end;
+    //                          idx++, scp.data_it.next(scp, __on_miss__)) {
+    //                         *(scp.data_it) = _get_nan<T>();
+    //                     }
+    //                 } else if constexpr (alg == PREFETCH || alg == PARAROUTINE) {
+    //                     scp.data_it = data.get_lite_iter(data_s, scp, idx_start, idx_end);
+    //                     for (size_t idx = idx_start; idx < idx_end; idx++, scp.data_it.next(scp))
+    //                     {
+    //                         *(scp.data_it) = _get_nan<T>();
+    //                     }
+    //                 } else {
+    //                     ERROR("alg dont exist");
+    //                 }
+    //             });
+    //     }
+    // }
+    // auto pend = get_cycles();
+    // std::cout << "padding: " << pend - pstart << std::endl;
+    const auto iter                         = column_tb_.find(name);
+    HeteroVector::WrappedVector<T>* vec_ptr = nullptr;
+
+    // auto cstart = get_cycles();
+    if (iter == column_tb_.end()) {
+        // std::cout << "create one" << std::endl;
+        vec_ptr = &(create_column<T>(name));
+    } else {
+        // std::cout << "has one" << std::endl;
+        DataVec& hv = data_[iter->second];
+        const SpinGuard guard(lock_);
+
+        vec_ptr = &(hv.template get_vector<T>());
+    }
+    // auto cend = get_cycles();
+    // std::cout << "get vec ptr: " << cend - cstart << std::endl;
+    // auto start = get_cycles();
+    *vec_ptr = data;
+    // auto end   = get_cycles();
+    // std::cout << "load column move: " << end - start << std::endl;
+    // auto ssend = get_cycles();
+    // std::cout << "load column: " << ssend - sstart << std::endl;
+    return (idx_s - data_s);
 }
 
 // ----------------------------------------------------------------------------
@@ -656,7 +762,11 @@ typename DataFrame<I, H>::size_type DataFrame<I, H>::append_column(const char* n
                                                                    DereferenceScope& scope,
                                                                    nan_policy padding)
 {
-    auto& vec             = get_column<T>(name);
+    auto& vec       = get_column<T>(name);
+    auto assert_vec = [&]() {
+        assert(vec.state != FarLib::BE_MOVED && get_column<T>(name).state != FarLib::BE_MOVED);
+    };
+    assert_vec();
     size_type s           = 1;
     const size_type idx_s = indices_.size();
 

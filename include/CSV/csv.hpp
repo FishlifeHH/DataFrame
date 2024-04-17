@@ -32,8 +32,6 @@
 #ifndef CSV_H
 #define CSV_H
 
-#include "simple_time.hpp"
-
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -41,6 +39,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "simple_time.hpp"
 #ifndef CSV_IO_NO_THREAD
 #include <condition_variable>
 #include <mutex>
@@ -386,8 +386,8 @@ class LineReader
     }
 
    public:
-    LineReader()                  = delete;
-    LineReader(const LineReader&) = delete;
+    LineReader()                             = delete;
+    LineReader(const LineReader&)            = delete;
     LineReader& operator=(const LineReader&) = delete;
 
     explicit LineReader(const char* file_name)
@@ -502,6 +502,7 @@ class LineReader
             }
         }
 
+        // TODO you need to wait the buffer ready!
         int line_end = data_begin;
         while (buffer[line_end] != '\n' && line_end != data_end) {
             ++line_end;
@@ -1226,7 +1227,7 @@ class CSVReader
    public:
     CSVReader()                 = delete;
     CSVReader(const CSVReader&) = delete;
-    CSVReader& operator         =(const CSVReader&);
+    CSVReader& operator=(const CSVReader&);
 
     template <class... Args>
     explicit CSVReader(Args&&... args) : in(std::forward<Args>(args)...)
@@ -1372,11 +1373,9 @@ std::tuple<std::vector<ColTypes>...> parse_csv_to_vectors(std::string csv_file_p
     std::tuple<std::vector<ColTypes>...> col_vecs;
     while (std::apply([&](auto&... fields) { return in.read_row(fields...); }, col_fields)) {
         auto seq = std::index_sequence_for<ColTypes...>{};
-        [&]<typename T, T... ints>(std::integer_sequence<T, ints...> int_seq)
-        {
+        [&]<typename T, T... ints>(std::integer_sequence<T, ints...> int_seq) {
             ((std::get<ints>(col_vecs).push_back(std::get<ints>(col_fields))), ...);
-        }
-        (seq);
+        }(seq);
     }
     return col_vecs;
 }

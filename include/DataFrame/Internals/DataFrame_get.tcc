@@ -219,6 +219,9 @@ std::unordered_map<U, size_t> DataFrame<I, H>::get_column_elem_count(const char*
             auto& u_map            = uthread_maps[i];
             const size_t idx_start = i * block;
             const size_t idx_end   = std::min(idx_start + block, vec.size());
+            if (idx_start >= idx_end) {
+                return;
+            }
             vec.template for_each<alg>(
                 [&](const T& elem, DereferenceScope& scope) { u_map[func(elem)]++; }, idx_start,
                 idx_end, scope);
@@ -282,7 +285,10 @@ FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values_impl(const char* nam
                 auto& u_table          = uthread_tables[i];
                 const size_t idx_start = i * block;
                 const size_t idx_end   = std::min(idx_start + block, vec.size());
-                counted_nan            = false;
+                if (idx_start >= idx_end) {
+                    return;
+                }
+                counted_nan = false;
                 vec.template for_each<alg>(
                     [&](const T& t, DereferenceScope& scope) {
                         if (_is_nan<T>(t) && !counted_nan) {
@@ -346,7 +352,9 @@ FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values_impl(const char* nam
                 } scp(&scope);
                 const size_t idx_start = i * block_fill;
                 const size_t idx_end   = std::min(result.size(), idx_start + block_fill);
-
+                if (idx_start >= idx_end) {
+                    return;
+                }
                 if constexpr (alg == UTHREAD) {
                     ON_MISS_BEGIN
                     uthread::yield();
@@ -420,7 +428,7 @@ V& DataFrame<I, H>::visit(const char* name, V& visitor)
             visitor(*indices_[i], nan_val);
         }
     } else {
-        const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
+        const size_t thread_cnt = uthread::get_worker_count();
         const size_t block1     = (min_s + thread_cnt - 1) / thread_cnt;
         uthread::parallel_for_with_scope<1>(
             thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
@@ -459,6 +467,9 @@ V& DataFrame<I, H>::visit(const char* name, V& visitor)
                 } scp(&scope);
                 const size_t idx_start = i * block1;
                 const size_t idx_end   = std::min(idx_start + block1, min_s);
+                if (idx_start >= idx_end) {
+                    return;
+                }
                 if constexpr (alg == UTHREAD) {
                     ON_MISS_BEGIN
                     uthread::yield();
@@ -485,6 +496,9 @@ V& DataFrame<I, H>::visit(const char* name, V& visitor)
             thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
                 const size_t idx_start = i * block2;
                 const size_t idx_end   = std::min(idx_start + block2, idx_s - min_s);
+                if (idx_start >= idx_end) {
+                    return;
+                }
                 indices_.template for_each<alg>(
                     [&](const I& idx, DereferenceScope& scope) {
                         T nan_val = _get_nan<T>();
@@ -1155,6 +1169,9 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
                 auto& u_indices        = uthread_indices[i];
                 const size_t idx_start = i * block;
                 const size_t idx_end   = std::min(idx_start + block, idx_s);
+                if (idx_start >= idx_end) {
+                    return;
+                }
                 ON_MISS_BEGIN
                 uthread::yield();
                 ON_MISS_END
@@ -1300,6 +1317,9 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
                 } scp(&scope);
                 const size_t idx_start = sizes[i];
                 const size_t idx_end   = sizes[i + 1];
+                if (idx_start >= idx_end) {
+                    return;
+                }
                 if constexpr (alg == UTHREAD) {
                     scp.u_it = u_indices.clbegin(scp, __on_miss__);
                     scp.it =

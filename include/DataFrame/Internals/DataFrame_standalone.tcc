@@ -103,7 +103,8 @@ static inline void _sort_by_sorted_index_copy_(FarLib::FarVector<T>& to_be_sorte
     using namespace FarLib::cache;
     FarLib::FarVector<T> result;
     result.template resize<true>(to_be_sorted.size());
-    const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
+    const size_t thread_cnt =
+        alg == UTHREAD ? uthread::get_worker_count() * UTH_FACTOR : uthread::get_worker_count();
     // aligned to group
     const size_t block =
         (sorting_idxs.groups_count() + thread_cnt - 1) / thread_cnt * sorting_idxs.GROUP_SIZE;
@@ -161,6 +162,9 @@ static inline void _sort_by_sorted_index_copy_(FarLib::FarVector<T>& to_be_sorte
             } scp(&scope);
             const size_t idx_start = i * block;
             const size_t idx_end   = std::min(idx_start + block, to_be_sorted.size());
+            if (idx_start >= idx_end) {
+                return;
+            }
             if constexpr (alg == UTHREAD) {
                 scp.idx_it        = sorting_idxs.get_const_lite_iter(idx_start, scp, __on_miss__,
                                                                      idx_start, idx_end);
@@ -175,6 +179,7 @@ static inline void _sort_by_sorted_index_copy_(FarLib::FarVector<T>& to_be_sorte
                 ON_MISS_BEGIN
                 ON_MISS_END
                 scp.idx_it = sorting_idxs.get_const_lite_iter(idx_start, scp, idx_start, idx_end);
+                assert(scp.idx_it.at_local());
                 scp.to_be_sort_it =
                     to_be_sorted.get_const_lite_iter(idx_start, scp, idx_start, idx_end);
                 for (size_t idx = idx_start; idx < idx_end;
@@ -190,6 +195,7 @@ static inline void _sort_by_sorted_index_copy_(FarLib::FarVector<T>& to_be_sorte
                 ERROR("algorithm dont exist");
             }
         });
+    // to_be_sorted.clear();
     std::swap(result, to_be_sorted);
 }
 
