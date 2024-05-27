@@ -762,11 +762,7 @@ typename DataFrame<I, H>::size_type DataFrame<I, H>::append_column(const char* n
                                                                    DereferenceScope& scope,
                                                                    nan_policy padding)
 {
-    auto& vec       = get_column<T>(name);
-    auto assert_vec = [&]() {
-        assert(vec.state != FarLib::BE_MOVED && get_column<T>(name).state != FarLib::BE_MOVED);
-    };
-    assert_vec();
+    auto& vec             = get_column<T>(name);
     size_type s           = 1;
     const size_type idx_s = indices_.size();
 

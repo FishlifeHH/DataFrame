@@ -868,11 +868,13 @@ int main(int argc, const char* argv[])
     // ~74M
     config.server_buffer_size = 1024L * 1024 * 256;
     config.client_buffer_size = 1024 * 1024 * 16;
-    config.max_thread_cnt     = 9;
+    config.app_thread_count   = 8;
+    config.worker_count       = 8;
 #else
     // ~16G
     config.server_buffer_size = 1024L * 1024 * 1024 * 64;
-    config.client_buffer_size = 1024L * 1024 * 1024 * 4;
+    config.client_buffer_size = 1024L * 1024 * 1024 * 5;
+    config.max_thread_cnt     = 8;
 #endif
     config.evict_batch_size = 64 * 1024;
 #else
@@ -893,44 +895,47 @@ int main(int argc, const char* argv[])
     std::this_thread::sleep_for(1s);
 #endif
     FarLib::runtime_init(config);
+    perf_init();
     srand(time(NULL));
     /* test */
     std::chrono::time_point<std::chrono::steady_clock> times[10];
     {
-        auto df  = load_data();
-        times[0] = std::chrono::steady_clock::now();
-        print_number_vendor_ids_and_unique(df);
-        times[1] = std::chrono::steady_clock::now();
-        print_passage_counts_by_vendor_id(df, 1);
-        times[2] = std::chrono::steady_clock::now();
-        print_passage_counts_by_vendor_id(df, 2);
-        times[3] = std::chrono::steady_clock::now();
-        calculate_trip_duration(df);
-        times[4] = std::chrono::steady_clock::now();
-        calculate_distribution_store_and_fwd_flag(df);
-        times[5] = std::chrono::steady_clock::now();
-        calculate_haversine_distance_column(df);
-        times[6] = std::chrono::steady_clock::now();
-        analyze_trip_timestamp(df);
-        times[7] = std::chrono::steady_clock::now();
-        analyze_trip_durations_of_timestamps<char>(df, "pickup_day");
-        times[8] = std::chrono::steady_clock::now();
-        analyze_trip_durations_of_timestamps<char>(df, "pickup_month");
-        times[9] = std::chrono::steady_clock::now();
+        auto df = load_data();
+        perf_profile([&] {
+            profile::reset_all();
+            times[0] = std::chrono::steady_clock::now();
+            print_number_vendor_ids_and_unique(df);
+            times[1] = std::chrono::steady_clock::now();
+            print_passage_counts_by_vendor_id(df, 1);
+            times[2] = std::chrono::steady_clock::now();
+            print_passage_counts_by_vendor_id(df, 2);
+            times[3] = std::chrono::steady_clock::now();
+            calculate_trip_duration(df);
+            times[4] = std::chrono::steady_clock::now();
+            calculate_distribution_store_and_fwd_flag(df);
+            times[5] = std::chrono::steady_clock::now();
+            calculate_haversine_distance_column(df);
+            times[6] = std::chrono::steady_clock::now();
+            analyze_trip_timestamp(df);
+            times[7] = std::chrono::steady_clock::now();
+            analyze_trip_durations_of_timestamps<char>(df, "pickup_day");
+            times[8] = std::chrono::steady_clock::now();
+            analyze_trip_durations_of_timestamps<char>(df, "pickup_month");
+            times[9] = std::chrono::steady_clock::now();
 
-        for (uint32_t i = 1; i < std::size(times); i++) {
-            std::cout << "Step " << i << ": "
-                      << std::chrono::duration_cast<std::chrono::microseconds>(times[i] -
-                                                                               times[i - 1])
+            for (uint32_t i = 1; i < std::size(times); i++) {
+                std::cout << "Step " << i << ": "
+                          << std::chrono::duration_cast<std::chrono::microseconds>(times[i] -
+                                                                                   times[i - 1])
+                                 .count()
+                          << " us" << std::endl;
+            }
+            std::cout << "Total: "
+                      << std::chrono::duration_cast<std::chrono::microseconds>(times[9] - times[0])
                              .count()
                       << " us" << std::endl;
-        }
-        std::cout
-            << "Total: "
-            << std::chrono::duration_cast<std::chrono::microseconds>(times[9] - times[0]).count()
-            << " us" << std::endl;
-        /* destroy runtime */
-        // profile::print_profile_data();
+        }).print();
+        profile::print_profile_data();
     }
     clear_data_hetero_vector();
     FarLib::runtime_destroy();

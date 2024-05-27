@@ -200,21 +200,9 @@ void HeteroVector::sort_impl_help_(T& functor)
 template <typename T, typename U>
 void HeteroVector::change_impl_help_(T& functor)
 {
-    for (auto& iter : vectors_<int>) {
-        assert(iter.second.state != FarLib::BE_MOVED);
-    }
-    for (auto& iter : vectors_<char>) {
-        assert(iter.second.state != FarLib::BE_MOVED);
-    }
-    for (auto& iter : vectors_<double>) {
-        assert(iter.second.state != FarLib::BE_MOVED);
-    }
-
     auto iter = vectors_<U>.find(this);
     if (iter != vectors_<U>.end()) {
-        assert(iter->second.state != FarLib::BE_MOVED);
         functor(iter->second);
-        assert(iter->second.state != FarLib::BE_MOVED);
     }
 }
 
