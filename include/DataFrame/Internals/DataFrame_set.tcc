@@ -455,7 +455,7 @@ typename DataFrame<I, H>::size_type DataFrame<I, H>::load_column(
                 ret_cnt += 1;
             }
         } else {
-            data.resize(idx_s);
+            data.template resize<true>(idx_s);
             const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
             const size_t block      = (idx_s - data_s + thread_cnt - 1) / thread_cnt;
             uthread::parallel_for_with_scope<1>(

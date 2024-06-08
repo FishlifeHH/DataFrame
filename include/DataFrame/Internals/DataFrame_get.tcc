@@ -1147,8 +1147,9 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
     const size_type idx_s       = indices_.size();
     const size_type col_s       = vec.size();
     FarLib::FarVector<size_type> col_indices;
-    col_indices.reserve(idx_s / 2);
+    // col_indices.reserve(idx_s / 2);
     // auto start = get_cycles();
+    // profile::reset_all();
     if constexpr (alg == DEFAULT) {
         for (size_type i = 0; i < col_s; ++i)
             if constexpr (trivial_opt) {
@@ -1164,6 +1165,10 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
         const size_t block = ((idx_s + vec.GROUP_SIZE - 1) / vec.GROUP_SIZE + thread_cnt - 1) /
                              thread_cnt * vec.GROUP_SIZE;
         std::vector<FarVector<size_t>> uthread_indices(thread_cnt);
+        for (auto& v : uthread_indices) {
+            v.reserve(block);
+        }
+        // auto start = get_cycles();
         uthread::parallel_for_with_scope<1>(
             thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
                 auto& u_indices        = uthread_indices[i];
@@ -1269,13 +1274,20 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
                     }
                 }
             });
+        // auto end = get_cycles();
+        // std::cout << "uindices get: " << end - start << std::endl;
         std::vector<size_t> sizes(thread_cnt + 1);
         sizes[0] = 0;
         for (size_t i = 1; i <= thread_cnt; i++) {
             sizes[i] = sizes[i - 1] + uthread_indices[i - 1].size();
         }
+        // for (auto siz : sizes) {
+        //     std::cout << siz << ", ";
+        // }
+        // std::cout << std::endl;
         size_t sum_size = sizes[thread_cnt];
-        col_indices.resize(sum_size);
+        col_indices.template resize<true>(sum_size);
+        // start = get_cycles();
         uthread::parallel_for_with_scope<1>(
             thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
                 auto& u_indices = uthread_indices[i];
@@ -1336,36 +1348,44 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
                     }
                 }
             });
+        // end = get_cycles();
+        // std::cout << "uindice assign back: " << end - start << std::endl;
     }
-
     // auto end = get_cycles();
     // std::cout << "get col indices: " << end - start << std::endl;
+    // profile::print_profile_data();
     // for (int i = 0; i < col_indices.size(); i++) {
     //     std::cout << *col_indices[i] << std::endl;
     // }
     // abort();
     DataFrame df;
+    // profile::reset_all();
     // start                  = get_cycles();
     IndexVecType new_index = indices_.template copy_data_by_idx<alg>(col_indices);
     // end                    = get_cycles();
     // std::cout << "new index get: " << end - start << std::endl;
+    // profile::print_profile_data();
     // std::cout << "-------------------------------------------------" << std::endl;
     // for (int i = 0; i < col_indices.size(); i++) {
     //     printf("%lu = %lu\n", *new_index[i], *col_indices[i]);
     //     ASSERT(*new_index[i] == *col_indices[i]);
     // }
+    // profile::reset_all();
     // start = get_cycles();
     df.load_index(std::move(new_index));
     // end = get_cycles();
     // std::cout << "load index: " << end - start << std::endl;
+    // profile::print_profile_data();
     size_t change_time = 0;
     for (auto col_citer : column_tb_) {
         alg_sel_load_functor_<alg, size_type, Ts...> functor(col_citer.first.c_str(), col_indices,
                                                              idx_s, df);
+        // profile::reset_all();
         // auto start = get_cycles();
         data_[col_citer.second].change(functor);
         // auto end = get_cycles();
         // std::cout << "change: " << end - start << std::endl;
+        // profile::print_profile_data();
         // change_time += end - start;
     }
     // std::cout << "change all: " << change_time << std::endl;

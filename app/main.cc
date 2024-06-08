@@ -102,12 +102,15 @@ void print_passage_counts_by_vendor_id(StdDataFrame<uint64_t>& df, int vendor_id
         return vid == vendor_id;
     };
     std::map<int, int> passage_count_map;
-    // auto start  = get_cycles();
+    // auto start = get_cycles();
+    // profile::reset_all();
     auto sel_df = df.get_data_by_sel<alg, trivial_opt, int, decltype(sel_vendor_functor), int,
                                      SimpleTime, double, char>("VendorID", sel_vendor_functor);
     // auto end    = get_cycles();
     // std::cout << "sel df get: " << end - start << std::endl;
+    // profile::print_profile_data();
     auto& passage_count_vec = sel_df.template get_column<int>("passenger_count");
+    // profile::reset_all();
     if constexpr (alg == DEFAULT) {
         for (auto passage_count : passage_count_vec) {
             passage_count_map[passage_count]++;
@@ -119,6 +122,7 @@ void print_passage_counts_by_vendor_id(StdDataFrame<uint64_t>& df, int vendor_id
         const size_t block = (passage_count_vec.groups_count() + thread_cnt - 1) / thread_cnt *
                              passage_count_vec.GROUP_SIZE;
         using map_t = decltype(passage_count_map);
+        // auto start  = get_cycles();
         std::vector<map_t> maps(thread_cnt);
         uthread::parallel_for_with_scope<1>(
             thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
@@ -132,12 +136,15 @@ void print_passage_counts_by_vendor_id(StdDataFrame<uint64_t>& df, int vendor_id
                     [&](const int& count, DereferenceScope& scope) { pmap[count]++; }, idx_start,
                     idx_end, scope);
             });
+        // auto end = get_cycles();
+        // std::cout << "count passager: " << end - start << std::endl;
         for (auto& m : maps) {
             for (auto& p : m) {
                 passage_count_map[p.first] += p.second;
             }
         }
     }
+    // profile::print_profile_data();
 
     for (auto& [passage_count, cnt] : passage_count_map) {
         std::cout << "passage_count= " << passage_count << ", cnt = " << cnt << std::endl;
@@ -895,46 +902,46 @@ int main(int argc, const char* argv[])
     std::this_thread::sleep_for(1s);
 #endif
     FarLib::runtime_init(config);
-    perf_init();
+    // perf_init();
     srand(time(NULL));
     /* test */
     std::chrono::time_point<std::chrono::steady_clock> times[10];
     {
         auto df = load_data();
-        perf_profile([&] {
-            profile::reset_all();
-            times[0] = std::chrono::steady_clock::now();
-            print_number_vendor_ids_and_unique(df);
-            times[1] = std::chrono::steady_clock::now();
-            print_passage_counts_by_vendor_id(df, 1);
-            times[2] = std::chrono::steady_clock::now();
-            print_passage_counts_by_vendor_id(df, 2);
-            times[3] = std::chrono::steady_clock::now();
-            calculate_trip_duration(df);
-            times[4] = std::chrono::steady_clock::now();
-            calculate_distribution_store_and_fwd_flag(df);
-            times[5] = std::chrono::steady_clock::now();
-            calculate_haversine_distance_column(df);
-            times[6] = std::chrono::steady_clock::now();
-            analyze_trip_timestamp(df);
-            times[7] = std::chrono::steady_clock::now();
-            analyze_trip_durations_of_timestamps<char>(df, "pickup_day");
-            times[8] = std::chrono::steady_clock::now();
-            analyze_trip_durations_of_timestamps<char>(df, "pickup_month");
-            times[9] = std::chrono::steady_clock::now();
+        // perf_profile([&] {
+        profile::reset_all();
+        times[0] = std::chrono::steady_clock::now();
+        print_number_vendor_ids_and_unique(df);
+        times[1] = std::chrono::steady_clock::now();
+        print_passage_counts_by_vendor_id(df, 1);
+        times[2] = std::chrono::steady_clock::now();
+        print_passage_counts_by_vendor_id(df, 2);
+        times[3] = std::chrono::steady_clock::now();
+        calculate_trip_duration(df);
+        times[4] = std::chrono::steady_clock::now();
+        calculate_distribution_store_and_fwd_flag(df);
+        times[5] = std::chrono::steady_clock::now();
+        calculate_haversine_distance_column(df);
+        times[6] = std::chrono::steady_clock::now();
+        analyze_trip_timestamp(df);
+        times[7] = std::chrono::steady_clock::now();
+        // analyze_trip_durations_of_timestamps<char>(df, "pickup_day");
+        times[8] = std::chrono::steady_clock::now();
+        // analyze_trip_durations_of_timestamps<char>(df, "pickup_month");
+        times[9] = std::chrono::steady_clock::now();
 
-            for (uint32_t i = 1; i < std::size(times); i++) {
-                std::cout << "Step " << i << ": "
-                          << std::chrono::duration_cast<std::chrono::microseconds>(times[i] -
-                                                                                   times[i - 1])
-                                 .count()
-                          << " us" << std::endl;
-            }
-            std::cout << "Total: "
-                      << std::chrono::duration_cast<std::chrono::microseconds>(times[9] - times[0])
+        for (uint32_t i = 1; i < std::size(times) - 2; i++) {
+            std::cout << "Step " << i << ": "
+                      << std::chrono::duration_cast<std::chrono::microseconds>(times[i] -
+                                                                               times[i - 1])
                              .count()
                       << " us" << std::endl;
-        }).print();
+        }
+        std::cout
+            << "Total: "
+            << std::chrono::duration_cast<std::chrono::microseconds>(times[9] - times[0]).count()
+            << " us" << std::endl;
+        // }).print();
         profile::print_profile_data();
     }
     clear_data_hetero_vector();

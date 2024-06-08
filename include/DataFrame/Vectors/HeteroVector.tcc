@@ -288,6 +288,8 @@ void HeteroVector::resize(size_type count)
 template <typename T>
 void HeteroVector::resize(size_type count, const T& v)
 {
+    std::cout << "error, not para resize" << std::endl;
+    abort();
     get_vector<T>().resize(count, v);
 }
 
