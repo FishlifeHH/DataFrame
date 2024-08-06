@@ -296,8 +296,12 @@ void calculate_trip_duration(StdDataFrame<uint64_t>& df)
                         if (is_nan__(d)) {
                             return;
                         }
-                        umind = std::min(umind, d);
-                        umaxd = std::max(umaxd, d);
+                        if (umind > d) {
+                            umind = d;
+                        }
+                        if (umaxd < d) {
+                            umaxd = d;
+                        }
                         usumd += d;
                         ucntd++;
                     },
