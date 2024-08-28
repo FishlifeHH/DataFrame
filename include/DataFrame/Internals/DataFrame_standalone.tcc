@@ -250,8 +250,8 @@ static inline void _sort_by_sorted_index_copy_(FarLib::FarVector<T>& to_be_sorte
             .result            = &result,
             .fetch_end         = false,
         };
-        root_scope.idx_it.next(scope);
-        root_scope.elem_it.next(scope);
+        root_scope.idx_it.next(root_scope);
+        root_scope.elem_it.next(root_scope);
         return ctx;
         SCOPED_INLINE_ASYNC_FOR_END
     } else {

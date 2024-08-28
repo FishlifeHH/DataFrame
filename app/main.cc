@@ -93,8 +93,8 @@ void print_passage_counts_by_vendor_id(StdDataFrame<uint64_t>& df, int vendor_id
     decltype(df.get_data_by_sel<alg, trivial_opt, int, decltype(sel_vendor_functor), int,
                                 SimpleTime, double, char>("VendorID", sel_vendor_functor)) sel_df;
     perf_profile([&]() {
-    sel_df = df.get_data_by_sel<alg, trivial_opt, int, decltype(sel_vendor_functor), int,
-                                SimpleTime, double, char>("VendorID", sel_vendor_functor);
+        sel_df = df.get_data_by_sel<alg, trivial_opt, int, decltype(sel_vendor_functor), int,
+                                    SimpleTime, double, char>("VendorID", sel_vendor_functor);
     });
     auto end = get_cycles();
     std::cout << "sel df get: " << end - start << std::endl;
@@ -505,7 +505,7 @@ void calculate_haversine_distance_column(StdDataFrame<uint64_t>& df)
     start            = get_cycles();
     auto sel_functor = [&](const uint64_t&, const double& dist) -> bool { return dist > 100; };
     auto sel_df      = df.get_data_by_sel<alg, trivial_opt, double, decltype(sel_functor), int,
-                                          SimpleTime, double, char>("haversine_distance", sel_functor);
+                                     SimpleTime, double, char>("haversine_distance", sel_functor);
     end              = get_cycles();
     std::cout << "haversine sel df: " << end - start << std::endl;
     std::cout << "Number of rows that have haversine_distance > 100 KM = "
@@ -834,15 +834,12 @@ int main(int argc, const char* argv[])
     /* test */
     std::chrono::time_point<std::chrono::steady_clock> times[10];
     {
-        FarLib::Cache::init_profile();
         auto df  = load_data();
         times[0] = std::chrono::steady_clock::now();
         print_number_vendor_ids_and_unique(df);
-        FarLib::Cache::start_profile();
         times[1] = std::chrono::steady_clock::now();
         print_passage_counts_by_vendor_id(df, 1);
         times[2] = std::chrono::steady_clock::now();
-        FarLib::Cache::end_profile();
         print_passage_counts_by_vendor_id(df, 2);
         times[3] = std::chrono::steady_clock::now();
         calculate_trip_duration(df);
@@ -871,11 +868,6 @@ int main(int argc, const char* argv[])
             << " us" << std::endl;
     }
     /* destroy runtime */
-    std::cout << "handle time: " << (static_cast<double>(FarLib::Cache::handle_time) / 2.8 / 1000)
-              << "us" << std::endl;
-    std::cout << "evict time: " << (static_cast<double>(FarLib::Cache::evict_time) / 2.8 / 1000)
-              << "us" << std::endl;
-
     FarLib::runtime_destroy();
 #ifdef STANDALONE
     server_thread.join();

@@ -70,11 +70,10 @@ void print_hours_and_unique(StdDataFrame<uint64_t>& df, size_t uthread_cnt)
                            }
                            days += st.day_;
                            return days * 24 + st.hour_;
-                       }, uthread_cnt)
+                       },
+                       uthread_cnt)
                      .size();
-    std::cout << "Number of unique hours in the train dataset:"
-              << siz
-              << std::endl;
+    std::cout << "Number of unique hours in the train dataset:" << siz << std::endl;
     std::cout << std::endl;
 }
 
@@ -98,13 +97,14 @@ int main(int argc, const char* argv[])
     config.evict_batch_size = 64 * 1024;
 #else
     if (argc != 2 && argc != 4) {
-        std::cout << "usage: " << argv[0] << " <configure file> [<core num> <uthread num>]" << std::endl;
+        std::cout << "usage: " << argv[0] << " <configure file> [<core num> <uthread num>]"
+                  << std::endl;
         return -1;
     }
     config.from_file(argv[1]);
     if (argc == 4) {
         config.max_thread_cnt = std::stoul(argv[2]);
-        uthread_cnt = std::stoul(argv[3]);
+        uthread_cnt           = std::stoul(argv[3]);
     } else {
         uthread_cnt = config.max_thread_cnt * UTH_FACTOR;
     }
@@ -122,7 +122,6 @@ int main(int argc, const char* argv[])
     std::chrono::time_point<std::chrono::steady_clock> times[10];
 
     {
-        FarLib::Cache::init_profile();
         auto df = load_data();
         print_hours_and_unique(df, uthread_cnt);
     }
