@@ -52,16 +52,8 @@ static double haversine(double lat1, double lon1, double lat2, double lon2)
     return rad * c;
 }
 
-StdDataFrame<uint64_t> load_data()
+StdDataFrame<uint64_t> load_data(const char* file_path)
 {
-#ifdef SIMPLE_BENCH
-    // const char* file_path =
-    // "/home/huanghong/mem_parallel/motivation/FarLib/build/very_simple.csv";
-    const char* file_path = "/mnt/simple.csv";
-
-#else
-    const char* file_path = "/mnt/all.csv";
-#endif
     return read_csv<-1, int, SimpleTime, SimpleTime, int, double, double, double, int, char, double,
                     double, int, double, double, double, double, double, double, double>(
         file_path, "VendorID", "tpep_pickup_datetime", "tpep_dropoff_datetime", "passenger_count",
@@ -885,13 +877,14 @@ int main(int argc, const char* argv[])
 #endif
     config.evict_batch_size = 64 * 1024;
 #else
-    if (argc != 2 && argc != 3) {
-        std::cout << "usage: " << argv[0] << " <configure file> [client buffer size]" << std::endl;
+    if (argc != 3 && argc != 4) {
+        std::cout << "usage: " << argv[0] << " <configure file> <file_path> [client buffer size]"
+                  << std::endl;
         return -1;
     }
     config.from_file(argv[1]);
-    if (argc == 3) {
-        config.client_buffer_size = std::stoul(argv[2]);
+    if (argc == 4) {
+        config.client_buffer_size = std::stoul(argv[3]);
     }
 #endif
 
@@ -902,47 +895,48 @@ int main(int argc, const char* argv[])
     std::this_thread::sleep_for(1s);
 #endif
     FarLib::runtime_init(config);
-    // perf_init();
+    FarLib::perf_init();
     srand(time(NULL));
     /* test */
     std::chrono::time_point<std::chrono::steady_clock> times[10];
     {
-        auto df = load_data();
-        // perf_profile([&] {
-        profile::reset_all();
-        times[0] = std::chrono::steady_clock::now();
-        print_number_vendor_ids_and_unique(df);
-        times[1] = std::chrono::steady_clock::now();
-        print_passage_counts_by_vendor_id(df, 1);
-        times[2] = std::chrono::steady_clock::now();
-        print_passage_counts_by_vendor_id(df, 2);
-        times[3] = std::chrono::steady_clock::now();
-        calculate_trip_duration(df);
-        times[4] = std::chrono::steady_clock::now();
-        calculate_distribution_store_and_fwd_flag(df);
-        times[5] = std::chrono::steady_clock::now();
-        calculate_haversine_distance_column(df);
-        times[6] = std::chrono::steady_clock::now();
-        analyze_trip_timestamp(df);
-        times[7] = std::chrono::steady_clock::now();
-        // analyze_trip_durations_of_timestamps<char>(df, "pickup_day");
-        times[8] = std::chrono::steady_clock::now();
-        // analyze_trip_durations_of_timestamps<char>(df, "pickup_month");
-        times[9] = std::chrono::steady_clock::now();
+        auto df = load_data(argv[2]);
+        FarLib::profile::beehive_profile([&] {
+            FarLib::perf_profile([&] {
+                times[0] = std::chrono::steady_clock::now();
+                print_number_vendor_ids_and_unique(df);
+                times[1] = std::chrono::steady_clock::now();
+                print_passage_counts_by_vendor_id(df, 1);
+                times[2] = std::chrono::steady_clock::now();
+                print_passage_counts_by_vendor_id(df, 2);
+                times[3] = std::chrono::steady_clock::now();
+                calculate_trip_duration(df);
+                times[4] = std::chrono::steady_clock::now();
+                calculate_distribution_store_and_fwd_flag(df);
+                times[5] = std::chrono::steady_clock::now();
+                calculate_haversine_distance_column(df);
+                times[6] = std::chrono::steady_clock::now();
+                analyze_trip_timestamp(df);
+                times[7] = std::chrono::steady_clock::now();
+                analyze_trip_durations_of_timestamps<char>(df, "pickup_day");
+                times[8] = std::chrono::steady_clock::now();
+                analyze_trip_durations_of_timestamps<char>(df, "pickup_month");
+                times[9] = std::chrono::steady_clock::now();
 
-        for (uint32_t i = 1; i < std::size(times) - 2; i++) {
-            std::cout << "Step " << i << ": "
-                      << std::chrono::duration_cast<std::chrono::microseconds>(times[i] -
-                                                                               times[i - 1])
-                             .count()
-                      << " us" << std::endl;
-        }
-        std::cout
-            << "Total: "
-            << std::chrono::duration_cast<std::chrono::microseconds>(times[9] - times[0]).count()
-            << " us" << std::endl;
-        // }).print();
-        profile::print_profile_data();
+                for (uint32_t i = 1; i < std::size(times); i++) {
+                    std::cout << "Step " << i << ": "
+                              << std::chrono::duration_cast<std::chrono::microseconds>(times[i] -
+                                                                                       times[i - 1])
+                                     .count()
+                              << " us" << std::endl;
+                }
+                std::cout << "Total: "
+                          << std::chrono::duration_cast<std::chrono::microseconds>(times[9] -
+                                                                                   times[0])
+                                 .count()
+                          << " us" << std::endl;
+            }).print();
+        });
     }
     clear_data_hetero_vector();
     FarLib::runtime_destroy();
