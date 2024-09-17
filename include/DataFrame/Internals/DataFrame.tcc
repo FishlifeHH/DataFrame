@@ -83,7 +83,7 @@ void DataFrame<I, H>::sort_common_(DataFrame<I, H>& df, FarLib::FarVector<T>& ve
         std::vector<uint64_t> cnts(cnts_size, 0);
         // this alg is unstable
         const size_t thread_cnt =
-            alg == UTHREAD ? uthread::get_worker_count() * UTH_FACTOR : uthread::get_worker_count();
+            alg == UTHREAD ? uthread::get_thread_count() * UTH_FACTOR : uthread::get_thread_count();
         // aligned to group
         const size_t block1 = (vec.groups_count() + thread_cnt - 1) / thread_cnt * vec.GROUP_SIZE;
         std::vector<std::vector<uint64_t>> ucnts;

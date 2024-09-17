@@ -175,7 +175,7 @@ FarLib::FarVector<T> DataFrame<I, H>::get_col_unique_values(const char* name) co
     return get_col_unique_values_impl<alg, T>(
         name, std::forward<decltype(hash_func)>(hash_func),
         std::forward<decltype(equal_func)>(equal_func),
-        alg == UTHREAD ? uthread::get_worker_count() * UTH_FACTOR : uthread::get_worker_count());
+        alg == UTHREAD ? uthread::get_thread_count() * UTH_FACTOR : uthread::get_thread_count());
 }
 
 template <typename I, typename H>
@@ -215,7 +215,6 @@ std::unordered_map<U, size_t> DataFrame<I, H>::get_column_elem_count(const char*
     }
     uthread::parallel_for_with_scope<1>(
         thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
-            profile::thread_start_work();
             auto& u_map            = uthread_maps[i];
             const size_t idx_start = i * block;
             const size_t idx_end   = std::min(idx_start + block, vec.size());
@@ -234,7 +233,6 @@ std::unordered_map<U, size_t> DataFrame<I, H>::get_column_elem_count(const char*
             mp[p.first] += p.second;
         }
     }
-    profile::end_work();
     return mp;
 }
 
@@ -428,7 +426,7 @@ V& DataFrame<I, H>::visit(const char* name, V& visitor)
             visitor(*indices_[i], nan_val);
         }
     } else {
-        const size_t thread_cnt = uthread::get_worker_count();
+        const size_t thread_cnt = uthread::get_thread_count();
         const size_t block1     = (min_s + thread_cnt - 1) / thread_cnt;
         uthread::parallel_for_with_scope<1>(
             thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
@@ -1160,7 +1158,7 @@ DataFrame<I, H> DataFrame<I, H>::get_data_by_sel(const char* name, F& sel_functo
     } else {
         // only available if index = [0...idx_s - 1]
         const size_t thread_cnt =
-            alg == UTHREAD ? uthread::get_worker_count() * UTH_FACTOR : uthread::get_worker_count();
+            alg == UTHREAD ? uthread::get_thread_count() * UTH_FACTOR : uthread::get_thread_count();
         // aligned to group
         const size_t block = ((idx_s + vec.GROUP_SIZE - 1) / vec.GROUP_SIZE + thread_cnt - 1) /
                              thread_cnt * vec.GROUP_SIZE;

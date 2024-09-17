@@ -109,7 +109,7 @@ void print_passage_counts_by_vendor_id(StdDataFrame<uint64_t>& df, int vendor_id
         }
     } else {
         const size_t thread_cnt =
-            alg == UTHREAD ? uthread::get_worker_count() * UTH_FACTOR : uthread::get_worker_count();
+            alg == UTHREAD ? uthread::get_thread_count() * UTH_FACTOR : uthread::get_thread_count();
         // aligned to group
         const size_t block = (passage_count_vec.groups_count() + thread_cnt - 1) / thread_cnt *
                              passage_count_vec.GROUP_SIZE;
@@ -162,7 +162,7 @@ void calculate_trip_duration(StdDataFrame<uint64_t>& df)
         }
     } else {
         const size_t thread_cnt =
-            alg == UTHREAD ? uthread::get_worker_count() * UTH_FACTOR : uthread::get_worker_count();
+            alg == UTHREAD ? uthread::get_thread_count() * UTH_FACTOR : uthread::get_thread_count();
         // aligned to group
         const size_t block = (pickup_time_vec.groups_count() + thread_cnt - 1) / thread_cnt *
                              pickup_time_vec.GROUP_SIZE;
@@ -265,7 +265,7 @@ void calculate_trip_duration(StdDataFrame<uint64_t>& df)
     uint64_t mind = std::numeric_limits<uint64_t>::max(), maxd = 0, sumd = 0, cntd = 0;
     if constexpr (alg != DEFAULT) {
         const size_t thread_cnt =
-            alg == UTHREAD ? uthread::get_worker_count() * UTH_FACTOR : uthread::get_worker_count();
+            alg == UTHREAD ? uthread::get_thread_count() * UTH_FACTOR : uthread::get_thread_count();
         // aligned to group
         const size_t block = (pickup_time_vec.groups_count() + thread_cnt - 1) / thread_cnt *
                              pickup_time_vec.GROUP_SIZE;
@@ -341,7 +341,7 @@ void calculate_distribution_store_and_fwd_flag(StdDataFrame<uint64_t>& df)
             std::cout << vector_id << ", ";
         }
     } else if constexpr (alg == UTHREAD) {
-        const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
+        const size_t thread_cnt = uthread::get_thread_count() * UTH_FACTOR;
         const size_t block      = (unique_vendor_id_vec.size() + thread_cnt - 1) / thread_cnt;
         // output cannot asynchronous
         uthread::parallel_for_with_scope<1>(1, 1, [&](size_t i, DereferenceScope& scope) {
@@ -410,7 +410,7 @@ void calculate_haversine_distance_column(StdDataFrame<uint64_t>& df)
         }
     } else {
         const size_t thread_cnt =
-            alg == UTHREAD ? uthread::get_worker_count() * UTH_FACTOR : uthread::get_worker_count();
+            alg == UTHREAD ? uthread::get_thread_count() * UTH_FACTOR : uthread::get_thread_count();
         const size_t block = (pickup_longitude_vec.groups_count() + thread_cnt - 1) / thread_cnt *
                              pickup_longitude_vec.GROUP_SIZE;
         // const size_t block = (pickup_longitude_vec.size() + thread_cnt - 1) / thread_cnt;
@@ -588,7 +588,7 @@ void analyze_trip_timestamp(StdDataFrame<uint64_t>& df)
         }
     } else {
         const size_t thread_cnt =
-            alg == UTHREAD ? uthread::get_worker_count() * UTH_FACTOR : uthread::get_worker_count();
+            alg == UTHREAD ? uthread::get_thread_count() * UTH_FACTOR : uthread::get_thread_count();
         // aligned to group
         const size_t block = (pickup_hour_vec.groups_count() + thread_cnt - 1) / thread_cnt *
                              pickup_hour_vec.GROUP_SIZE;
@@ -775,7 +775,7 @@ void analyze_trip_durations_of_timestamps(StdDataFrame<uint64_t>& df, const char
             std::cout << static_cast<int>(*key_vec[i]) << " " << *duration_vec[i] << std::endl;
         }
     } else if constexpr (alg == UTHREAD) {
-        const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
+        const size_t thread_cnt = uthread::get_thread_count() * UTH_FACTOR;
         const size_t block      = (key_vec.size() + thread_cnt - 1) / thread_cnt;
         // output cannot asynchronous
         uthread::parallel_for_with_scope<1>(1, 1, [&](size_t i, DereferenceScope& scope) {

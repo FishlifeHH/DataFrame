@@ -456,7 +456,7 @@ typename DataFrame<I, H>::size_type DataFrame<I, H>::load_column(
             }
         } else {
             data.template resize<true>(idx_s);
-            const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
+            const size_t thread_cnt = uthread::get_thread_count() * UTH_FACTOR;
             const size_t block      = (idx_s - data_s + thread_cnt - 1) / thread_cnt;
             uthread::parallel_for_with_scope<1>(
                 thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {
@@ -627,7 +627,7 @@ typename DataFrame<I, H>::size_type DataFrame<I, H>::load_column(
     //         }
     //     } else {
     //         data.resize(idx_s);
-    //         const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
+    //         const size_t thread_cnt = uthread::get_thread_count() * UTH_FACTOR;
     //         const size_t block      = (idx_s - data_s + thread_cnt - 1) / thread_cnt;
     //         uthread::parallel_for_with_scope<1>(
     //             thread_cnt, thread_cnt, [&](size_t i, DereferenceScope& scope) {

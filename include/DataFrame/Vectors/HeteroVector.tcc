@@ -133,7 +133,7 @@ void HeteroVector::visit_impl_help_(T& visitor)
         if constexpr (alg == DEFAULT) {
             for (auto&& element : iter->second) visitor(element);
         } else {
-            const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
+            const size_t thread_cnt = uthread::get_thread_count() * UTH_FACTOR;
             // aligned to group
             const size_t block = (iter->second.group_count() + thread_cnt - 1) / thread_cnt *
                                  iter->second.GROUP_SIZE;
@@ -166,7 +166,7 @@ void HeteroVector::visit_impl_help_(T& visitor) const
         if constexpr (alg == DEFAULT) {
             for (auto&& element : citer->second) visitor(element);
         } else {
-            const size_t thread_cnt = uthread::get_worker_count() * UTH_FACTOR;
+            const size_t thread_cnt = uthread::get_thread_count() * UTH_FACTOR;
             // aligned to group
             const size_t block = (citer->second.group_count() + thread_cnt - 1) / thread_cnt *
                                  citer->second.GROUP_SIZE;

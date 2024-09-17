@@ -104,7 +104,7 @@ static inline void _sort_by_sorted_index_copy_(FarLib::FarVector<T>& to_be_sorte
     FarLib::FarVector<T> result;
     result.template resize<true>(to_be_sorted.size());
     const size_t thread_cnt =
-        alg == UTHREAD ? uthread::get_worker_count() * UTH_FACTOR : uthread::get_worker_count();
+        alg == UTHREAD ? uthread::get_thread_count() * UTH_FACTOR : uthread::get_thread_count();
     // aligned to group
     const size_t block =
         (sorting_idxs.groups_count() + thread_cnt - 1) / thread_cnt * sorting_idxs.GROUP_SIZE;
