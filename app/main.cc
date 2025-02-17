@@ -19,6 +19,7 @@
 #include "utils/debug.hpp"
 #include "utils/parallel.hpp"
 #include "utils/perf.hpp"
+#include "utils/profile.hpp"
 // #define STANDALONE
 // simple: ~74M, full: ~16G
 // #define SIMPLE_BENCH
