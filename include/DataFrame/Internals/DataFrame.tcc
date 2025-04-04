@@ -1113,13 +1113,16 @@ DataFrame<I, H> DataFrame<I, H>::groupby(F&& func, const char* gb_col_name,
 
     if (!::strcmp(gb_col_name, DF_INDEX_COL_NAME)) {  // Index
         const size_type vec_size = tmp_df.indices_.size();
-
         for (size_type i = 0; i < vec_size; ++i) {
-            if (*tmp_df.indices_[i] != *tmp_df.indices_[marker]) {
+            bool res;
+            {
+                RootDereferenceScope scope;
+                res = *tmp_df.indices_.get_const_lite_iter(i, scope) != *tmp_df.indices_.get_lite_iter(marker, scope);
+            }
+            if (res) {
                 {
                     RootDereferenceScope scope;
-
-                    result.append_index(*tmp_df.indices_[marker], scope);
+                    result.append_index(*tmp_df.indices_.get_const_lite_iter(marker, scope), scope);
                 }
                 for (const auto& iter : tmp_df.column_tb_) {
                     groupby_functor_<F, Ts...> functor(iter.first.c_str(), marker, i,
@@ -1135,7 +1138,7 @@ DataFrame<I, H> DataFrame<I, H>::groupby(F&& func, const char* gb_col_name,
             {
                 RootDereferenceScope scope;
 
-                result.append_index(*tmp_df.indices_[vec_size - 1], scope);
+                result.append_index(*tmp_df.indices_.get_const_lite_iter(vec_size - 1, scope), scope);
             }
             for (const auto& iter : tmp_df.column_tb_) {
                 groupby_functor_<F, Ts...> functor(iter.first.c_str(), marker, vec_size,
@@ -1149,14 +1152,19 @@ DataFrame<I, H> DataFrame<I, H>::groupby(F&& func, const char* gb_col_name,
 
         const size_type vec_size = gb_vec.size();
         for (size_type i = 0; i < vec_size; ++i) {
-            if (*gb_vec[i] != *gb_vec[marker]) {
+            bool res;
+            {
+                RootDereferenceScope scope;
+                res = *(gb_vec.get_const_lite_iter(i, scope)) != *(gb_vec.get_const_lite_iter(marker, scope));
+            }
+            if (res) {
                 groupby_functor_<F, IndexType> ts_functor(DF_INDEX_COL_NAME, marker, i,
                                                           tmp_df.indices_, func, result);
                 ts_functor(tmp_df.indices_);
 
                 {
                     RootDereferenceScope scope;
-                    result.append_column<T>(gb_col_name, *gb_vec[marker], scope,
+                    result.append_column<T>(gb_col_name, *gb_vec.get_const_lite_iter(marker, scope), scope,
                                             nan_policy::dont_pad_with_nans);
                 }
 
@@ -1180,7 +1188,7 @@ DataFrame<I, H> DataFrame<I, H>::groupby(F&& func, const char* gb_col_name,
 
             {
                 RootDereferenceScope scope;
-                result.append_column<T>(gb_col_name, *gb_vec[vec_size - 1], scope,
+                result.append_column<T>(gb_col_name, *gb_vec.get_const_lite_iter(vec_size - 1, scope), scope,
                                         nan_policy::dont_pad_with_nans);
             }
 

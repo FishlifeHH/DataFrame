@@ -214,11 +214,11 @@ struct bucket_functor_ : DataVec::template visitor_base<Ts...> {
 
 template <typename... Ts>
 struct print_csv_functor_ : DataVec::template visitor_base<Ts...> {
-    inline print_csv_functor_(const char* n, std::ostream& o) : name(n), os(o) {}
+    inline print_csv_functor_(const char* n, std::ostream& o, DereferenceScope &scope) : name(n), os(o), scope(scope) {}
 
     const char* name;
     std::ostream& os;
-
+    DereferenceScope &scope;
     template <typename T>
     void operator()(const T& vec);
 };
@@ -227,14 +227,15 @@ struct print_csv_functor_ : DataVec::template visitor_base<Ts...> {
 
 template <typename... Ts>
 struct print_json_functor_ : DataVec::template visitor_base<Ts...> {
-    inline print_json_functor_(const char* n, bool npc, std::ostream& o)
-        : name(n), need_pre_comma(npc), os(o)
+    inline print_json_functor_(const char* n, bool npc, std::ostream& o, DereferenceScope &scope)
+        : name(n), need_pre_comma(npc), os(o), scope(scope)
     {
     }
 
     const char* name;
     const bool need_pre_comma;
     std::ostream& os;
+    DereferenceScope &scope;
 
     template <typename T>
     void operator()(const T& vec);
